@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.obsidian/
+brain/models/
+*.gguf
+*.safetensors
+logs/
+downloaded_video.mp4
+.stackforge_backup/
+mythos_state/
+media/
+freenet_storage/
