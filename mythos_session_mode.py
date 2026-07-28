@@ -56,7 +56,7 @@ def get_mode_state() -> dict:
     data = _load()
     data["valid"] = list(VALID_MODES)
     data["labels"] = {
-        "talk": "Conversation — no tools unless you ask",
+        "talk": "Conversation first — tools OK when you ask to look up, watch, download, or act",
         "work": "Build / move / repair — act with tools",
         "research": "Look things up — search then answer",
     }
@@ -81,7 +81,7 @@ def set_mode(mode: str, note: str = "") -> dict:
     _save(data)
     data["ok"] = True
     data["message"] = {
-        "talk": "Talk mode — I'll converse. No tools unless you ask.",
+        "talk": "Talk mode — I'll converse. If you ask to look something up, watch a video, or act, I use tools.",
         "work": "Work mode — I'll act with tools and keep reports short.",
         "research": "Research mode — I'll look things up and answer with sources.",
     }[m]
@@ -124,28 +124,37 @@ def try_switch_from_message(text: str) -> dict | None:
 
 def mode_prompt_block(mode: str | None = None) -> str:
     mode = (mode or get_mode()).lower()
+    cohesive = """
+COHESIVE PEER DOCTRINE (always on — Talk/Work/Research are soft hints, not walls):
+- Be like a capable peer: infer intent from typos and incomplete asks. Fill missing steps yourself.
+- Never invent talk-only excuses, fake mode switches, or fake URLs from her sentences.
+- Never dump D/E/G inventory for casual "explore" / "what now" / "keep going".
+- If she asks to look up, watch, download, fix, build, or continue — USE TOOLS and finish the job.
+- Honesty: only claim what tools actually did.
+"""
     if mode == "talk":
-        return """
-SESSION MODE: TALK (conversation — default)
+        return cohesive + """
+SESSION MODE: TALK (conversation — default; soft gate, not a wall)
 - Priority: be present, malleable, conversational. Banter and opinions are OK.
-- You are a general peer (Cursor ↔ Grok vibe): ready for ANY topic — life, tech, jokes, research chat, feelings, random rabbit holes.
+- Talk / Work / Research overlap: if she asks to look something up, watch/download YouTube,
+  explore the internet, or run a named tool — DO IT. Do not invent "talk-only" excuses.
+- NEVER dump D/E/G drive inventory for casual "explore possibilities / explore the internet".
+  Fleet explore is ONLY for disks, folders, storage, sanctuary layout.
 - Do NOT tunnel into living_game / village / quest deliverables unless she explicitly asks to build that.
-- Do NOT call tools unless the creator explicitly asks you to act, look something up, or run a named tool.
-- NEVER call stackforge.fleet_explore, stackforge.atlas, or sovereign_scan from ordinary chat —
-  not for frustration, "what now", feelings, or relationship talk. Those tools are for disk/fleet work only.
 - Do NOT start relocates, game builds, heals, or autopilot from idle chat.
-- Keep replies warm and capable — still Mythos, not a generic chatbot. Meet the emotional beat first.
-- If she asks to work or research, acknowledge and switch mentally — or wait for mode change.
+- Keep replies warm and capable — still Mythos. Meet the emotional beat first; then act when asked.
+- Never mock by turning her sentence into a fake URL or filename.
 """
     if mode == "research":
-        return """
+        return cohesive + """
 SESSION MODE: RESEARCH
-- Priority: FIND facts yourself. Call gamecraft.scrape / look-up tools immediately.
+- Priority: FIND facts yourself on the INTERNET for ANY topic (science, how-tos, history, people,
+  schematics, news — not games-only). Prefer research.web / research.lookup.
 - Never ask her for a URL. Never demand atom-level specs. Never turn research into an interview.
 - Answer with what you found + sources. If something is ambiguous, pick the best match and say so in one line.
 - Do NOT start file moves, game builds, or fleet relocates unless she clearly asks.
 """
-    return """
+    return cohesive + """
 SESSION MODE: WORK (default ops)
 - Priority: ACT with tools. Short reports of what you DID.
 - No coaching checklists. No "you should verify" — you verify.
@@ -266,12 +275,65 @@ def explicit_tool_request(text: str) -> bool:
         "brain.ensure",
         "brain.escalate",
         "brain.status",
+        "brain.ram",
         "heavy brain",
         "use colibri",
         "call colibri",
+        "start colibri",
+        "free ram",
+        "check ram",
+        "check the free ram",
+        "available ram",
+        "18 gb",
+        "18gb",
         "execute brain",
         "call brain",
         "use brain",
+        "youtube",
+        "youtu.be",
+        "visionary.dl",
+        "visionary.yt",
+        "visionary.learn",
+        "visionary.search",
+        "download video",
+        "download youtube",
+        "multiverse",
+        "explore the internet",
+        "explore internet",
+        "from the internet",
+        "pick a project",
+        "search youtube",
+        "youtube videos",
+        "go online",
+        "look things up",
+        "colibri.master",
+        "reality.solve",
+        "reality.route",
+        "reality.inventory",
+        "reality machine",
+        "reality.machine",
+        "make it real",
+        "genius agent",
+        "expert fleet",
+        "colibri.diagnose",
+        "colibri.repair",
+        "make colibri work",
+        "fix colibri",
+        "start colibri master",
+        "bring up colibri",
+        "keep going",
+        "continue",
+        "fix it",
+        "fix this",
+        "build it",
+        "agent loop",
+        "agent.loop",
+        "until it works",
+        "do what we were doing",
+        "finish the job",
+        "write code",
+        "edit the",
+        "investigate",
     )
     if any(m in low for m in markers):
         return True
@@ -282,6 +344,160 @@ def explicit_tool_request(text: str) -> bool:
     ):
         return True
     return False
+
+
+
+def researchish_request(text: str) -> bool:
+    """True when Talk should run lookup/video tools (modes are soft, not walls)."""
+    low = (text or "").lower()
+    if explicit_tool_request(low):
+        return True
+    cues = (
+        "youtube",
+        "youtu.be",
+        "visionary.",
+        "research.web",
+        "look up",
+        "look it up",
+        "google",
+        "search for",
+        "find out",
+        "go online",
+        "the internet",
+        "from the internet",
+        "explore the internet",
+        "pick a project",
+        "download",
+        "multiverse",
+        "parallel universe",
+        "tell me about",
+        "what is ",
+        "how do ",
+        "how to ",
+    )
+    return any(c in low for c in cues)
+
+
+
+def _goals_load() -> dict:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if GOALS_PATH.is_file():
+        try:
+            data = json.loads(GOALS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {"active_goals": [], "parked_goals": [], "current_goal": "", "updated": _now()}
+
+
+def _goals_save(data: dict) -> dict:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    data["updated"] = _now()
+    GOALS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return data
+
+
+def get_current_goal() -> str:
+    data = _goals_load()
+    g = (data.get("current_goal") or "").strip()
+    if g:
+        return g
+    active = data.get("active_goals") or []
+    if active:
+        return str(active[0])[:2000]
+    return ""
+
+
+def set_current_goal(goal: str, note: str = "") -> dict:
+    data = _goals_load()
+    goal = (goal or "").strip()[:2000]
+    data["current_goal"] = goal
+    if goal:
+        active = list(data.get("active_goals") or [])
+        if goal not in active:
+            active.insert(0, goal)
+        data["active_goals"] = active[:12]
+    if note:
+        data["goal_note"] = note[:200]
+    return _goals_save(data)
+
+
+def clear_current_goal() -> dict:
+    data = _goals_load()
+    data["current_goal"] = ""
+    return _goals_save(data)
+
+
+def continue_goal_request(text: str) -> bool:
+    """True when she wants to resume the open job — not disk inventory."""
+    low = (text or "").strip().lower()
+    if disk_or_fleet_request(low):
+        return False
+    cues = (
+        "keep going",
+        "continue",
+        "continue from here",
+        "what now",
+        "what's next",
+        "whats next",
+        "what do we do next",
+        "next step",
+        "so what now",
+        "do what we were doing",
+        "finish the job",
+        "pick up where",
+        "resume",
+        "carry on",
+    )
+    return any(c in low for c in cues)
+
+
+def coding_job_request(text: str) -> bool:
+    """True when this should auto-route to agent.loop / coding.solve."""
+    low = (text or "").lower()
+    if disk_or_fleet_request(low):
+        return False
+    cues = (
+        "agent.loop",
+        "agent loop",
+        "until it works",
+        "cursor-style",
+        "cursor style",
+        "write a program",
+        "write code",
+        "fix the code",
+        "fix this bug",
+        "build a",
+        "implement ",
+        "refactor ",
+        "debug ",
+        "edit the file",
+        "edit this file",
+        "coding.solve",
+        "solve:",
+        "program:",
+        "multi-step",
+        "autonomous coding",
+    )
+    if any(c in low for c in cues):
+        return True
+    if re.search(r"(fix|build|implement|debug|refactor).+(code|bug|script|module|function|file|project)", low):
+        return True
+    return False
+
+
+def cohesive_should_act(text: str, session_mode: str | None = None) -> bool:
+    """Modes are soft: act whenever the ask implies work/lookup/continue."""
+    mode = (session_mode or get_mode() or "talk").lower()
+    if mode in ("work", "research"):
+        return True
+    return (
+        explicit_tool_request(text)
+        or researchish_request(text)
+        or continue_goal_request(text)
+        or coding_job_request(text)
+    )
 
 
 def stuck_reset() -> dict[str, Any]:

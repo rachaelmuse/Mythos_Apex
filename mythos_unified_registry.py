@@ -580,6 +580,171 @@ def _load_service_limbs(protocol, quiet: bool = True) -> None:
         },
     )
 
+    from advanced_shards.reality_machine_limb import RealityMachineLimb
+
+    reality = RealityMachineLimb()
+    protocol.register(
+        "reality.status",
+        reality,
+        "status",
+        {"description": "Reality Machine status — system MoE orchestrator", "parameters": {"type": "object", "properties": {}}},
+    )
+    protocol.register(
+        "reality.inventory",
+        reality,
+        "inventory",
+        {
+            "description": "Federate drives — list top folders across D/E/G (no moves)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_per_drive": {"type": "integer", "default": 30},
+                    "roots": {"type": "string", "description": "Optional extra paths ;-separated"},
+                },
+            },
+        },
+    )
+    protocol.register(
+        "reality.route",
+        reality,
+        "route",
+        {
+            "description": "Divide a goal into expert regions (system Mixture-of-Experts plan)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string"},
+                    "context": {"type": "string"},
+                },
+                "required": ["goal"],
+            },
+        },
+    )
+    protocol.register(
+        "reality.find_project",
+        reality,
+        "find_project",
+        {
+            "description": "Search D/E/G for a project folder by name",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "drives": {"type": "string", "default": "D,E,G"},
+                    "max_hits": {"type": "integer", "default": 20},
+                },
+                "required": ["name"],
+            },
+        },
+    )
+    protocol.register(
+        "reality.continue",
+        reality,
+        "continue_solve",
+        {
+            "description": "Resume the last Reality Machine goal until done",
+            "parameters": {
+                "type": "object",
+                "properties": {"max_steps": {"type": "integer", "default": 8}},
+            },
+        },
+    )
+    protocol.register(
+        "reality.solve",
+        reality,
+        "solve",
+        {
+            "description": "Reality Machine: inventory→route→research→code/debug→heavy escalate until done",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string"},
+                    "project_dir": {"type": "string"},
+                    "max_steps": {"type": "integer", "default": 8},
+                    "allow_internet": {"type": "boolean", "default": True},
+                    "allow_heavy": {"type": "boolean", "default": True},
+                    "allow_colibri_master": {"type": "boolean", "default": True},
+                    "language": {"type": "string", "default": ""},
+                },
+                "required": ["goal"],
+            },
+        },
+    )
+
+    from advanced_shards.colibri_master_limb import ColibriMasterLimb
+
+    coli_master = ColibriMasterLimb()
+    protocol.register(
+        "colibri.status",
+        coli_master,
+        "status",
+        {"description": "Colibri Master status — MoE bring-up mission", "parameters": {"type": "object", "properties": {}}},
+    )
+    protocol.register(
+        "colibri.diagnose",
+        coli_master,
+        "diagnose",
+        {"description": "Diagnose Colibri weights/RAM/IO blockers", "parameters": {"type": "object", "properties": {}}},
+    )
+    protocol.register(
+        "colibri.repair_weights",
+        coli_master,
+        "repair_weights",
+        {
+            "description": "Delete corrupt/tiny shards and resume HF download",
+            "parameters": {
+                "type": "object",
+                "properties": {"start_download": {"type": "boolean", "default": True}},
+            },
+        },
+    )
+    protocol.register(
+        "colibri.free_competitors",
+        coli_master,
+        "free_competitors",
+        {
+            "description": "Stop llama/colibri servers hogging RAM on 8010/8088",
+            "parameters": {
+                "type": "object",
+                "properties": {"aggressive": {"type": "boolean", "default": False}},
+            },
+        },
+    )
+    protocol.register(
+        "colibri.try_serve",
+        coli_master,
+        "try_serve",
+        {
+            "description": "Try one low-RAM Colibri serve profile and wait for /v1/models",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "profile": {"type": "string"},
+                    "wait_sec": {"type": "integer", "default": 90},
+                    "port": {"type": "integer", "default": 8010},
+                },
+            },
+        },
+    )
+    protocol.register(
+        "colibri.master",
+        coli_master,
+        "master",
+        {
+            "description": "Focus until Colibri MoE is up: diagnose→repair→free RAM→try profiles→probe",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_rounds": {"type": "integer", "default": 6},
+                    "wait_sec": {"type": "integer", "default": 90},
+                    "repair": {"type": "boolean", "default": True},
+                    "free_ram": {"type": "boolean", "default": True},
+                    "smoke": {"type": "boolean", "default": True},
+                },
+            },
+        },
+    )
+
     from advanced_shards.heavy_brain_limb import HeavyBrainLimb
 
     heavy = HeavyBrainLimb()
@@ -589,6 +754,15 @@ def _load_service_limbs(protocol, quiet: bool = True) -> None:
         "status",
         {
             "description": "Heavy brain (Colibri/GGUF) status — separate from daily Ollama chat",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    )
+    protocol.register(
+        "brain.ram",
+        heavy,
+        "ram",
+        {
+            "description": "Check free/total RAM vs Colibri ~18GB peak need. Report numbers only — no chat fluff.",
             "parameters": {"type": "object", "properties": {}},
         },
     )

@@ -702,7 +702,31 @@ REGISTERED TOOLS:
         """
         lowered = (user_message or "").strip().lower()
         calls: list[dict] = []
-        drive_explore_msg = bool(
+        skip_drive_explore = any(
+            k in lowered
+            for k in (
+                "explore the internet",
+                "explore internet",
+                "from the internet",
+                "on the internet",
+                "pick a project",
+                "youtube",
+                "youtu.be",
+                "visionary.",
+            )
+        )
+        internet_explore = any(
+            k in lowered
+            for k in (
+                "explore the internet",
+                "explore internet",
+                "from the internet",
+                "on the internet",
+                "pick a project from the internet",
+                "project from the internet",
+            )
+        )
+        drive_explore_msg = (not skip_drive_explore) and bool(
             re.search(
                 r"(?i)\b(explore|inventory|map|browse|scan)\b.+\b(drives?|folders?|files?)\b"
                 r"|\b(drives?|folders?)\b.+\b(d|e|g)\b"
@@ -714,8 +738,8 @@ REGISTERED TOOLS:
                 user_message or "",
             )
             or (
-                any(k in lowered for k in ("explore all", "explore the folders", "explore folders and files"))
-                and any(x in lowered for x in ("drive", " d", " e", " g", "d:", "e:", "g:"))
+                any(k in lowered for k in ("explore all", "explore the folders", "explore folders and files", "explore drives"))
+                and any(x in lowered for x in ("drive", "drives", "folder", "folders", "d:", "e:", "g:"))
             )
         )
 
@@ -736,6 +760,39 @@ REGISTERED TOOLS:
         parsed = self.protocol.parse_calls(user_message or "")
         if parsed:
             return parsed[:3]
+
+        # RAM / Colibri readiness — act, do not lecture
+        if any(
+            k in lowered
+            for k in (
+                "brain.ram",
+                "free ram",
+                "check ram",
+                "check the free ram",
+                "check free ram",
+                "available ram",
+                "how much ram",
+                "18 gb",
+                "18gb",
+                "enough ram",
+                "start colibri",
+                "retry starting colibri",
+                "retry colibri",
+            )
+        ) or (
+            any(k in lowered for k in ("proceed", "do it", "execute", "go ahead", "yes"))
+            and any(
+                (entry.get("message") or "").lower().find(k) >= 0
+                for entry in (history or [])[-6:]
+                for k in ("colibri", "free ram", "18 gb", "brain.ram", "brain.ensure")
+            )
+        ):
+            add("brain.ram")
+            if any(k in lowered for k in ("start colibri", "retry", "ensure", "brain.ensure")) or (
+                "proceed" in lowered and "ram" not in lowered
+            ):
+                add("brain.ensure", {"wait_sec": 30, "start_if_down": True})
+            return calls[:3]
 
         # Heavy brain (Colibri/GGUF) — MUST beat research.web / "find out" false positives
         if any(
@@ -810,6 +867,109 @@ REGISTERED TOOLS:
                     },
                 )
             return calls[:3]
+
+
+
+        # Reality Machine — resource-aware system MoE (do not park)
+        if any(
+            k in lowered
+            for k in (
+                "reality.solve",
+                "reality.continue",
+                "reality.find_project",
+                "reality.route",
+                "reality.inventory",
+                "reality.status",
+                "reality machine",
+                "reality.machine",
+                "make it real",
+                "genius agent",
+                "expert fleet",
+                "mixture of experts system",
+                "system moe",
+                "orchestrat",
+            )
+        ):
+            if ("continue" in lowered or "keep going" in lowered) and "reality" in lowered:
+                add("reality.continue", {"max_steps": 8})
+            elif "find project" in lowered or "find_project" in lowered:
+                import re as _re
+                m = _re.search(r"find\s+project\s+(.+)$", user_message or "", _re.I)
+                add("reality.find_project", {"name": (m.group(1).strip() if m else user_message)[:120]})
+            elif "inventory" in lowered and "solve" not in lowered:
+                add("reality.inventory", {"max_per_drive": 30})
+            elif "route" in lowered and "solve" not in lowered:
+                add("reality.route", {"goal": (user_message or "")[:2000]})
+            elif "status" in lowered and "solve" not in lowered and "reality" in lowered:
+                add("reality.status")
+            else:
+                add(
+                    "reality.solve",
+                    {
+                        "goal": (user_message or "")[:2000],
+                        "max_steps": 8,
+                        "allow_internet": True,
+                        "allow_heavy": True,
+                        "allow_colibri_master": True,
+                    },
+                )
+            return calls[:3]
+
+        # Colibri Master — focus until MoE is up (do not park)
+        if any(
+            k in lowered
+            for k in (
+                "colibri.master",
+                "colibri.diagnose",
+                "colibri.repair",
+                "make colibri work",
+                "fix colibri",
+                "bring up colibri",
+                "start colibri master",
+                "colibri master",
+                "get colibri running",
+                "make the moe work",
+                "make moe work",
+            )
+        ):
+            if "diagnose" in lowered and "master" not in lowered and "repair" not in lowered:
+                add("colibri.diagnose")
+            elif "repair" in lowered and "master" not in lowered:
+                add("colibri.repair_weights", {"start_download": True})
+            else:
+                add("colibri.master", {"max_rounds": 6, "wait_sec": 120, "repair": True, "free_ram": True})
+            return calls[:3]
+
+
+        from mythos_session_mode import coding_job_request, set_current_goal
+        if coding_job_request(user_message) and not calls:
+            goal = (user_message or "").strip()[:2000]
+            set_current_goal(goal, note="coding-job")
+            if "agent.loop" in self.protocol.tools:
+                add("agent.loop", {"goal": goal, "max_steps": 6, "allow_heavy": True, "allow_online": True})
+                return calls[:3]
+            if "coding.solve" in self.protocol.tools:
+                add("coding.solve", {"need": goal, "force_write": True})
+                return calls[:3]
+
+        if (internet_explore or any(
+            k in lowered
+            for k in (
+                "explore the internet",
+                "explore internet",
+                "pick a project from the internet",
+                "project from the internet",
+            )
+        )) and not any(k in lowered for k in ("youtube", "youtu.be", "visionary.", "video")):
+            topic = re.sub(
+                r"(?is)\b(explore|the|internet|pick|a|project|from|online|please|can you)\b",
+                " ",
+                user_message or "",
+            )
+            topic = re.sub(r"\s+", " ", topic).strip(" .,-")[:200] or "interesting open source projects"
+            if "research.web" in self.protocol.tools:
+                add("research.web", {"topic": topic, "limit": 24})
+                return calls[:3]
 
         # Drive explore first — never misroute to sovereign_apply / web research
         if drive_explore_msg or any(
@@ -900,43 +1060,52 @@ REGISTERED TOOLS:
 
         yt = extract_yt_url(user_message or "")
 
-        # YouTube / video FIRST — never let "look up" steal a video URL into gamecraft.
-        if yt or any(
+        yt_topic_ask = (not yt) and any(
             k in lowered
             for k in (
-                "download youtube",
-                "youtube.com",
-                "youtu.be",
-                "visionary.dl",
-                "visionary.yt",
-                "visionary.learn",
-                "reverse engineer",
-                "reverse-engineer",
-                "learn from this video",
-                "learn from the video",
+                "youtube", "youtu.be", "visionary.dl", "visionary.yt", "visionary.learn",
+                "visionary.search", "download youtube", "youtube videos", "youtube video",
+            )
+        )
+        if yt or yt_topic_ask or any(
+            k in lowered
+            for k in (
+                "download youtube", "youtube.com", "youtu.be", "visionary.dl", "visionary.yt",
+                "visionary.learn", "reverse engineer", "reverse-engineer",
+                "learn from this video", "learn from the video",
             )
         ):
-            if any(
-                k in lowered
-                for k in (
-                    "reverse engineer",
-                    "reverse-engineer",
-                    "learn from",
-                    "visionary.learn",
-                    "reproduce",
-                    "how they built",
-                )
-            ):
-                args: dict = {"url": yt} if yt else {}
-                if "game" in lowered or "scraper" in lowered:
-                    args["goal"] = user_message[:240]
-                add("visionary.learn", args)
-            elif "analyze" in lowered or "understand" in lowered or "visionary.yt" in lowered:
-                add("visionary.yt", {"url": yt} if yt else {})
+            if any(k in lowered for k in ("reverse engineer", "reverse-engineer", "learn from", "visionary.learn", "reproduce", "how they built")):
+                if yt:
+                    args: dict = {"url": yt}
+                    if "game" in lowered or "scraper" in lowered:
+                        args["goal"] = user_message[:240]
+                    add("visionary.learn", args)
+                else:
+                    q = re.sub(r"(?is)\b(run\s+)?visionary\.(dl|yt|learn|search)\b|\b(youtube|videos?|download|popular|some)\b", " ", user_message or "")
+                    q = re.sub(r"\s+", " ", q).strip(" .,-")[:120] or "tutorial"
+                    add("visionary.search", {"query": q, "limit": 5, "download_top": True})
             elif any(k in lowered for k in ("repair visionary", "fix youtube", "install deno", "js runtime", "install yt-dlp")):
                 add("visionary.repair_deps")
+            elif yt and ("analyze" in lowered or "understand" in lowered or "visionary.yt" in lowered):
+                add("visionary.yt", {"url": yt})
+            elif yt:
+                add("visionary.dl", {"url": yt})
             else:
-                add("visionary.dl", {"url": yt} if yt else {})
+                q = ""
+                m_q = re.search(r"(?is)(?:on|about|for|of)\s+(?:some\s+)?(.+?)\s+youtube", user_message or "")
+                if m_q:
+                    q = m_q.group(1).strip()
+                if not q:
+                    q = re.sub(
+                        r"(?is)\b(run\s+)?`?visionary\.(dl|yt|learn|search)`?\b|\b(youtube|videos?|download|popular|some|run|gather|insights?|information)\b",
+                        " ", user_message or "",
+                    )
+                q = re.sub(r"(?i)\b(to|and|the|a|an|or|for|with|from|help|us|get|started|understanding|concept|better|this|will)\b", " ", q)
+                q = re.sub(r"\s+", " ", q).strip(" .,-")[:160]
+                if not q or len(q) < 4:
+                    q = "multiverse theory explained"
+                add("visionary.search", {"query": q, "limit": 5, "download_top": True})
             if calls:
                 return calls[:3]
 
@@ -1366,23 +1535,35 @@ REGISTERED TOOLS:
             )
         ):
             add("stackforge.sovereign_scan", {"summary_only": True})
-        # "what now" / continue after scan — refresh scan and state next concrete moves (not a quiz)
-        if any(
-            k in lowered
-            for k in (
-                "what now",
-                "what do we do next",
-                "what's next",
-                "whats next",
-                "so what now",
-                "keep going",
-                "next step",
-                "continue from here",
+        if not calls:
+            from mythos_session_mode import (
+                coding_job_request,
+                continue_goal_request,
+                get_current_goal,
+                set_current_goal,
             )
-        ) and not calls:
-            add("stackforge.sovereign_scan", {"summary_only": True})
-            add("stackforge.fleet_explore", {"drives": "D,E,G", "max_per_drive": 25})
-            return calls[:3]
+            if continue_goal_request(user_message) or coding_job_request(user_message):
+                goal = get_current_goal()
+                if not goal:
+                    for entry in reversed(history or []):
+                        if entry.get("from") in {"CREATOR", "USER", "creator", "user"}:
+                            prev = (entry.get("message") or "").strip()
+                            if len(prev) >= 12 and not continue_goal_request(prev):
+                                goal = prev[:2000]
+                                break
+                if not goal:
+                    goal = (user_message or "").strip()[:2000]
+                set_current_goal(goal, note="continue/keep-going")
+                # Prefer agent.loop for keep-going (Cursor-shaped continue)
+                if "agent.loop" in self.protocol.tools:
+                    add("agent.loop", {"goal": goal, "max_steps": 6, "allow_heavy": True, "allow_online": True})
+                elif "coding.solve" in self.protocol.tools and coding_job_request(goal):
+                    add("coding.solve", {"need": goal, "force_write": True})
+                elif "research.web" in self.protocol.tools:
+                    add("research.web", {"topic": goal[:240], "limit": 24})
+                elif "brain.escalate" in self.protocol.tools:
+                    add("brain.escalate", {"goal": goal, "error": "", "context": "creator asked to keep going"})
+                return calls[:3]
         if lowered.startswith("sovereign apply "):
             src = user_message.split("sovereign apply ", 1)[1].strip().strip('"')
             execute = " execute" in lowered or lowered.endswith(" now")
@@ -2778,7 +2959,8 @@ REGISTERED TOOLS:
             )
         ) or (
             "explore" in lowered
-            and any(x in lowered for x in ("drive", "folder", " d", " e", " g"))
+            and any(x in lowered for x in ("drive", "drives", "folder", "folders"))
+            and not any(x in lowered for x in ("internet", "youtube", "online", "possibilities", "ideas", "project"))
         ):
             from mythos_stackforge_bridge import fleet_explore_drives
 
@@ -2797,19 +2979,7 @@ REGISTERED TOOLS:
                 "next step",
             )
         ):
-            from mythos_stackforge_bridge import fleet_explore_drives, sovereign_scan
-
-            scan = sovereign_scan(summary_only=True)
-            explor = fleet_explore_drives("D,E,G", max_per_drive=20)
-            return (
-                "NEXT (from last layout work — I will not quiz you):\n"
-                "1) Creations still on C → move one at a time with: sovereign apply PATH now\n"
-                "2) D = home for your programs; E/G = fluff / wipe candidates\n"
-                "3) I just re-checked D/E/G tops (list only).\n\n"
-                + str(scan)[:3500]
-                + "\n\n"
-                + json.dumps(explor, indent=2, default=str)[:3500]
-            )[:8000]
+            return None
 
         if lowered in {
             "sovereign scan",
@@ -3158,14 +3328,14 @@ REGISTERED TOOLS:
         action_flag = Path(APEX_ROOT) / "config" / "action_only.flag"
         action_only = action_flag.is_file() and session_mode != "talk"
 
-        # Intent router — gated by session mode
+        from mythos_session_mode import cohesive_should_act, researchish_request
+
         intent_results = []
-        if session_mode == "talk":
-            if explicit_tool_request(user_message):
-                intent_results = await self._run_intent_tools(user_message, history=history)
-        elif session_mode == "research":
+        intent_seed_payload = ""
+        intent_seed_note = ""
+        if cohesive_should_act(user_message, session_mode):
             intent_results = await self._run_intent_tools(user_message, history=history)
-            # Research mode: ANY substantive ask goes online — except explicit heavy-brain orders
+        if session_mode == "research" or (researchish_request(user_message) and not intent_results):
             low_msg = (user_message or "").lower()
             heavy_ordered = any(
                 k in low_msg
@@ -3188,8 +3358,6 @@ REGISTERED TOOLS:
                     item = await self.protocol.execute({"tool": tool, "args": args})
                     intent_results = [item]
                     self.last_tool_results.extend(intent_results)
-        else:
-            intent_results = await self._run_intent_tools(user_message, history=history)
 
         def _tool_ok(item: dict) -> bool:
             if "error" in item:
@@ -3204,32 +3372,31 @@ REGISTERED TOOLS:
 
         intent_tools = [item.get("tool") for item in intent_results if _tool_ok(item)]
         if intent_results and not intent_tools:
-            # Soft failures (missing url, timeout) — surface clearly, don't say "Done"
             bits = []
             for item in intent_results:
                 result = item.get("result") if isinstance(item.get("result"), dict) else {}
                 err = item.get("error") or result.get("err") or result.get("error") or "failed"
                 bits.append(f"{item.get('tool')}: {err}")
-            return {
-                "message": "Tool ran but failed:\n" + "\n".join(bits),
-                "tools_used": [i.get("tool") for i in intent_results if i.get("tool")],
-                "rounds": 0,
-            }
-        if intent_tools:
+            intent_seed_note = "Tool ran but failed:\n" + "\n".join(bits)
+        else:
+            intent_seed_note = intent_seed_note or ""
+
+        _terminal = {
+            "visionary.search", "visionary.dl", "visionary.yt", "visionary.learn",
+            "research.web", "gamecraft.scrape", "agent.loop", "coding.solve",
+            "brain.heavy", "brain.escalate", "brain.ensure", "brain.ram", "brain.status",
+        }
+        if intent_tools and all(x in _terminal for x in intent_tools):
             brief_bits = []
             for item in intent_results:
                 if "error" in item:
                     brief_bits.append(f"{item.get('tool')}: ERROR {item['error']}")
                 else:
-                    preview = str(item.get("result"))[:600]
-                    brief_bits.append(f"{item.get('tool')}: {preview}")
-            # Short LLM polish optional — if Ollama slow/broken, still return tool proof
+                    brief_bits.append(f"{item.get('tool')}: {str(item.get('result'))[:600]}")
             summary = "Done.\n" + "\n".join(brief_bits)
             try:
                 if self.active_model or detect_chat_model():
-                    model = self.active_model or detect_chat_model()
                     client = get_ollama_client()
-                    # Detect plan-only vs executed so the model cannot invent a successful move
                     plan_only = False
                     for item in intent_results:
                         res = item.get("result") if isinstance(item.get("result"), dict) else {}
@@ -3244,19 +3411,13 @@ REGISTERED TOOLS:
                                 "role": "system",
                                 "content": (
                                     "You are Mythos. Report what tools already DID in 2-4 plain sentences. "
-                                    "No instructions. No cheat sheets. Only claim tool results. "
-                                    "Never tell the creator to monitor, verify, check the drive, or follow up — "
-                                    "YOU verify via tools, or report verify results already in the tool JSON. "
-                                    "Never invent success: if status is planned / executed=false, say it is a PLAN only "
-                                    "and nothing was moved. Do not add an 'evidence-backed suggestion' section. "
-                                    "Never use a generic closing question."
+                                    "Honesty only: never invent success or fake mode switches. No coaching."
                                 ),
                             },
                             {
                                 "role": "user",
                                 "content": (
-                                    f"Creator asked: {user_message}\n"
-                                    f"Plan-only (nothing executed yet): {plan_only}\n\nTool results:\n"
+                                    f"Creator asked: {user_message}\nPlan-only: {plan_only}\n\nTool results:\n"
                                     + json.dumps(intent_results, indent=2, default=str)[:7000]
                                 ),
                             },
@@ -3265,9 +3426,12 @@ REGISTERED TOOLS:
                     summary = polished.get("message", {}).get("content", summary) or summary
                     if _looks_like_instruction_dump(summary):
                         summary = _scrub_instruction_tone(summary)
-                    # Hard strip coaching suggestion blocks
-                    if "evidence-backed suggestion" in summary.lower() or "advisable to" in summary.lower():
-                        summary = _scrub_instruction_tone(summary)
+            except Exception:
+                pass
+            try:
+                from mythos_session_mode import set_current_goal
+                if any(x in intent_tools for x in ("agent.loop", "coding.solve")):
+                    set_current_goal(user_message[:2000], note="from-terminal-tool")
             except Exception:
                 pass
             return {
@@ -3277,6 +3441,16 @@ REGISTERED TOOLS:
                 "tool_results": intent_results,
             }
 
+        if intent_tools:
+            intent_seed_payload = (
+                "Intent router already ran these tools (treat as done facts; continue if goal incomplete):\n"
+                + json.dumps(intent_results, indent=2, default=str)[:7000]
+            )
+        elif intent_seed_note:
+            intent_seed_payload = (
+                "Intent tools failed — recover with other tools. Do not mock.\n" + intent_seed_note
+            )
+
         mode_line = (
             "MODE: FICTION — creative writing allowed; label output as story."
             if mode == "FICTION"
@@ -3284,8 +3458,8 @@ REGISTERED TOOLS:
         )
         if session_mode == "talk":
             mode_line = (
-                "MODE: TALK — conversation first. Do not invent tool work. "
-                "Only use tools if the creator explicitly asks. Stay malleable and present."
+                "MODE: COHESIVE PEER (talk hint) — infer intent, use tools when needed, finish the job. "
+                "Never dump drives for casual explore. Never invent talk-only excuses or fake URLs."
             )
         elif session_mode == "research":
             mode_line = (
@@ -3304,6 +3478,10 @@ REGISTERED TOOLS:
             )
         else:
             collaboration_context = self.build_collaboration_context(user_message)
+        honesty = (
+            "HONESTY: Never claim tools ran, modes switched, or downloads finished unless tool JSON shows it. "
+            "Never invent talk-only magic. Infer typos. Fill missing tool args yourself."
+        )
         messages = [
             {
                 "role": "system",
@@ -3311,7 +3489,9 @@ REGISTERED TOOLS:
                 + "\n\n"
                 + collaboration_context
                 + "\n\n"
-                + mode_line,
+                + mode_line
+                + "\n\n"
+                + honesty,
             }
         ]
 
@@ -3322,12 +3502,54 @@ REGISTERED TOOLS:
             role = "assistant" if entry.get("from") == "MYTHOS" else "user"
             messages.append({"role": role, "content": text})
 
-        if not messages or messages[-1]["role"] != "user":
-            messages.append({"role": "user", "content": user_message})
+        soft_plan = ""
+        try:
+            if cohesive_should_act(user_message, session_mode) and (self.active_model or detect_chat_model()):
+                client_plan = get_ollama_client()
+                planned = await self._ollama_chat(
+                    client_plan,
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are Mythos soft planner. Given a messy creator ask, reply with ONLY:\n"
+                                "GOAL: one line\n"
+                                "STEPS: 2-5 short bullets\n"
+                                "TOOLS: comma-separated tool names if any "
+                                "(visionary.search, research.web, agent.loop, coding.solve, brain.escalate, ...)\n"
+                                "No fluff. Infer typos. Do not ask her for URLs."
+                            ),
+                        },
+                        {"role": "user", "content": (user_message or "")[:2000]},
+                    ],
+                )
+                soft_plan = ((planned.get("message") or {}).get("content") or "").strip()[:1500]
+                if soft_plan:
+                    try:
+                        from mythos_session_mode import set_current_goal
+                        mgoal = re.search(r"(?im)^GOAL:\s*(.+)$", soft_plan)
+                        if mgoal:
+                            set_current_goal(mgoal.group(1).strip()[:2000], note="soft-planner")
+                    except Exception:
+                        pass
+        except Exception:
+            soft_plan = ""
 
-        tools_used = []
+        user_payload = user_message
+        if soft_plan:
+            user_payload = f"{user_message}\n\n[Soft plan]\n{soft_plan}"
+        if intent_seed_payload:
+            user_payload = f"{user_payload}\n\n[Seeded tool results]\n{intent_seed_payload}"
+
+        if not messages or messages[-1]["role"] != "user":
+            messages.append({"role": "user", "content": user_payload})
+        else:
+            messages[-1]["content"] = user_payload
+
+        tools_used = list(intent_tools) if intent_tools else []
         final_text = ""
         forced_act = False
+        empty_tool_streak = 0
 
         client = get_ollama_client()
         for _round in range(MAX_TOOL_ROUNDS):
@@ -3338,8 +3560,37 @@ REGISTERED TOOLS:
 
             tool_results = await self._execute_plan(content)
             if not tool_results:
-                # Second chance / force-act — NEVER in plain talk without an explicit tool ask
-                allow_force = session_mode != "talk" or explicit_tool_request(user_message)
+                empty_tool_streak += 1
+                if empty_tool_streak >= 2 and "brain.escalate" in self.protocol.tools and _round >= 1:
+                    try:
+                        from mythos_session_mode import get_current_goal
+                        eg = get_current_goal() or user_message[:2000]
+                        esc = await self.protocol.execute(
+                            {
+                                "tool": "brain.escalate",
+                                "args": {
+                                    "goal": eg,
+                                    "error": "chat loop stuck — model replied without tools twice",
+                                    "context": content[:3000],
+                                },
+                            }
+                        )
+                        self.last_tool_results.append(esc)
+                        if esc.get("tool"):
+                            tools_used.append("brain.escalate")
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "Heavy escalate result (use this; call more tools if needed):\n"
+                                + json.dumps(esc, indent=2, default=str)[:6000],
+                            }
+                        )
+                        empty_tool_streak = 0
+                        continue
+                    except Exception:
+                        pass
+                allow_force = session_mode != "talk" or cohesive_should_act(user_message, session_mode)
                 if allow_force and not forced_act:
                     forced = await self._run_intent_tools(user_message, history=history)
                     if forced:
@@ -3373,6 +3624,7 @@ REGISTERED TOOLS:
                 )
                 break
 
+            empty_tool_streak = 0
             for item in tool_results:
                 name = item.get("tool")
                 if name and name != "unknown" and "error" not in item:

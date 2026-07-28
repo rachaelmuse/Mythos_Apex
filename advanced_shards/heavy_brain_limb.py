@@ -41,7 +41,26 @@ def _api_base() -> str:
 
 
 def _model_name() -> str:
-    return (os.environ.get("MYTHOS_HEAVY_MODEL") or "colibri-glm52").strip()
+    return (os.environ.get("MYTHOS_HEAVY_MODEL") or "glm-5.2-colibri").strip()
+
+
+def _cloud_allowed() -> bool:
+    flag = (os.environ.get("MYTHOS_ALLOW_CLOUD_HEAVY") or "0").strip().lower()
+    return flag in {"1", "true", "yes", "on"}
+
+
+def _cloud_api_base() -> str:
+    raw = (os.environ.get("MYTHOS_HEAVY_CLOUD_API") or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if raw.endswith("/chat/completions"):
+        raw = raw[: -len("/chat/completions")]
+    return raw
+
+
+def _cloud_model_name() -> str:
+    return (os.environ.get("MYTHOS_HEAVY_CLOUD_MODEL") or "gpt-4o-mini").strip()
+
 
 
 def _probe(base: str, timeout: float = 3.0) -> dict[str, Any]:
@@ -123,10 +142,19 @@ def _chat_completions(
     # Colibri tip: topp helps quality on slow MoE
     payload["top_p"] = float(os.environ.get("MYTHOS_HEAVY_TOP_P") or 0.85)
     data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    api_key = (
+        os.environ.get("MYTHOS_HEAVY_CLOUD_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("MYTHOS_HEAVY_API_KEY")
+        or ""
+    ).strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -159,6 +187,37 @@ def _chat_completions(
     }
 
 
+
+def _try_cloud_ready() -> dict[str, Any]:
+    """Third heavy tier: gated OpenAI-compatible cloud API."""
+    if not _cloud_allowed():
+        return {"ok": False, "skipped": True, "reason": "MYTHOS_ALLOW_CLOUD_HEAVY not enabled"}
+    cloud_base = _cloud_api_base()
+    if not cloud_base:
+        return {"ok": False, "error": "MYTHOS_HEAVY_CLOUD_API not set"}
+    probe = _probe(cloud_base, timeout=8.0)
+    # Some cloud hosts reject /models — still allow if key present
+    key = (
+        os.environ.get("MYTHOS_HEAVY_CLOUD_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or ""
+    ).strip()
+    if probe.get("ok") or key:
+        os.environ["MYTHOS_HEAVY_API"] = cloud_base
+        os.environ["MYTHOS_HEAVY_MODEL"] = _cloud_model_name()
+        return {
+            "ok": True,
+            "already_up": True,
+            "api": cloud_base,
+            "switched_to": "cloud",
+            "cloud_fallback": True,
+            "probe": probe,
+            "model": _cloud_model_name(),
+            "note": "Local heavy down; using gated cloud OpenAI-compatible API",
+        }
+    return {"ok": False, "error": probe.get("error") or "cloud unreachable", "api": cloud_base, "probe": probe}
+
+
 class HeavyBrainLimb:
     """On-demand frontier brain (Colibri / GGUF) — not daily chat."""
 
@@ -181,8 +240,65 @@ class HeavyBrainLimb:
             "serve_bat": str(COLIBRI_SERVE_BAT),
             "serve_bat_exists": COLIBRI_SERVE_BAT.is_file(),
             "gguf_fallback_8088": gguf_probe,
-            "tools": ["brain.status", "brain.ensure", "brain.think", "brain.heavy", "brain.escalate"],
-            "note": "Agents call brain.heavy when stuck; you do not need to paste into Colibri chat.",
+            "tools": ["brain.status", "brain.ram", "brain.ensure", "brain.think", "brain.heavy", "brain.escalate"],
+            "note": "Agents call brain.heavy when stuck. Escalation: Colibri → GGUF :8088 → gated cloud (MYTHOS_ALLOW_CLOUD_HEAVY).",
+            "cloud_allowed": _cloud_allowed(),
+            "cloud_api": _cloud_api_base() or None,
+        }
+
+    def ram(self) -> dict[str, Any]:
+        """Report physical RAM vs Colibri needs — no chat fluff."""
+        total_gb = None
+        free_gb = None
+        try:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                total_gb = round(stat.ullTotalPhys / (1024**3), 2)
+                free_gb = round(stat.ullAvailPhys / (1024**3), 2)
+        except Exception as exc:
+            return {"ok": False, "error": f"RAM probe failed: {exc}"}
+
+        need_peak = 18.0
+        can_ever = bool(total_gb is not None and total_gb >= need_peak)
+        enough_now = bool(free_gb is not None and free_gb >= need_peak)
+        return {
+            "ok": True,
+            "total_ram_gb": total_gb,
+            "free_ram_gb": free_gb,
+            "colibri_peak_need_gb": need_peak,
+            "enough_free_now": enough_now,
+            "machine_can_ever_hold_peak": can_ever,
+            "verdict": (
+                "Colibri can try now — free RAM meets peak estimate."
+                if enough_now
+                else (
+                    f"IMPOSSIBLE on this PC: total RAM is {total_gb} GB but Colibri wants ~{need_peak} GB peak. "
+                    "Closing apps cannot create free RAM above total installed memory."
+                    if not can_ever
+                    else f"Not enough free RAM yet ({free_gb} GB free). Close heavy apps, then retry brain.ram / brain.ensure."
+                )
+            ),
+            "ports": {
+                "colibri_default": _api_base(),
+                "gguf_8088": DEFAULT_GGUF_API,
+            },
+            "at": _now(),
         }
 
     def ensure(self, wait_sec: int = 45, start_if_down: bool = True) -> dict[str, Any]:
@@ -252,13 +368,17 @@ class HeavyBrainLimb:
                     "at": _now(),
                 }
 
+        cloud = _try_cloud_ready()
+        if cloud.get("ok"):
+            return cloud
         return {
             "ok": False,
             "started": True,
             "error": f"started serve bat but API not up within {wait_sec}s (model load can take longer)",
             "api": base,
             "probe": last,
-            "hint": "Leave the Colibri window open; retry brain.ensure / brain.heavy",
+            "hint": "Leave the Colibri window open; retry brain.ensure / brain.heavy — or set MYTHOS_ALLOW_CLOUD_HEAVY=1",
+            "cloud": cloud,
         }
 
     def think(
@@ -277,12 +397,17 @@ class HeavyBrainLimb:
         if ensure_up:
             ready = self.ensure(wait_sec=60, start_if_down=True)
             if not ready.get("ok"):
-                return {
-                    "ok": False,
-                    "error": ready.get("error") or "heavy brain not available",
-                    "ensure": ready,
-                    "fallback": "daily Ollama still available for normal chat",
-                }
+                cloud = _try_cloud_ready()
+                if cloud.get("ok"):
+                    ready = cloud
+                else:
+                    return {
+                        "ok": False,
+                        "error": ready.get("error") or "heavy brain not available",
+                        "ensure": ready,
+                        "cloud": cloud,
+                        "fallback": "daily Ollama still available for normal chat",
+                    }
 
         base = _api_base()
         sys_msg = (system or "").strip() or (
