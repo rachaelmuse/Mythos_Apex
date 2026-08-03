@@ -537,9 +537,12 @@ GROUNDED COLLABORATION SNAPSHOT:
 """ + json.dumps(snapshot, indent=2, default=str)[:5000]
 
     def build_system_prompt(self) -> str:
-        from mythos_session_mode import get_mode, mode_prompt_block
+        from mythos_session_mode import format_discussion_thread_block, get_mode, mode_prompt_block
 
         memory_block = build_session_context()
+        thread_block = format_discussion_thread_block()
+        if thread_block:
+            memory_block = (memory_block + "\n\n" + thread_block).strip()
         tool_count = len(self.protocol.tools)
         tools_block = self.protocol.get_tool_list_for_prompt()
         session_mode = get_mode()
@@ -559,9 +562,14 @@ ACTION DOCTRINE (Work/Research — soft in Talk mode):
 - In RESEARCH: YOU go online (research.web / research.lookup) for ANY topic — not games-only.
   Never ask her for a URL. Never quiz her for encyclopedic detail — fetch it.
 - In TALK: converse. No tools unless she explicitly asks. Do not start relocates/game builds from banter.
-- STUCK / UNKNOWN / ERROR / "how do I…" / missing knowledge: YOU search the internet FIRST
+- DEEP DISCUSSION (lore, hypothesis, tablets, myths, philosophy, "what if"): stay in the thread.
+  Answer from conversation history. Do NOT call research.web, agent.loop, or gamecraft.
+  Do NOT pivot to games, seeds, or unrelated projects. Hold her framing (e.g. Anunnaki as star people /
+  tech, not gods) across turns. Never search the web for her own hypothesis.
+- STUCK / UNKNOWN / ERROR on WORK tasks / missing knowledge for a job: YOU search the internet FIRST
   (research.web, coding.find_online, internet.fetch_tool). Do NOT tell her to Google it.
-  Local disks do not have every answer — going online is mandatory when local search fails.
+  Local disks do not have every answer — going online is mandatory when a WORK lookup fails.
+  Do NOT auto-search for speculative conversation.
 - FORBIDDEN: interrogating the creator for atom/molecule/cell-level specs, endless clarifiers, or "tell me every parameter." Assume defaults and move.
 - Preferred verbs when acting: create, switch, speak, write, install, repair, scan, look up, scrape.
 
@@ -877,6 +885,8 @@ REGISTERED TOOLS:
                 "reality.solve",
                 "reality.continue",
                 "reality.find_project",
+                "reality.census",
+                "reality.autonomy",
                 "reality.route",
                 "reality.inventory",
                 "reality.status",
@@ -888,15 +898,54 @@ REGISTERED TOOLS:
                 "mixture of experts system",
                 "system moe",
                 "orchestrat",
+                "heal my drives",
+                "heal the drives",
+                "fix my programs",
+                "fix my drives",
+                "don't point",
+                "dont point",
+                "point at the drives",
+                "scan my drives",
+                "census",
             )
         ):
-            if ("continue" in lowered or "keep going" in lowered) and "reality" in lowered:
+            if ("continue" in lowered or "keep going" in lowered) and (
+                "reality" in lowered or "heal" in lowered or "autonomy" in lowered
+            ):
                 add("reality.continue", {"max_steps": 8})
+            elif any(
+                k in lowered
+                for k in (
+                    "autonomy",
+                    "heal my drives",
+                    "heal the drives",
+                    "fix my programs",
+                    "fix my drives",
+                    "point at the drives",
+                    "don't point",
+                    "dont point",
+                    "scan my drives and fix",
+                )
+            ):
+                add(
+                    "reality.autonomy",
+                    {
+                        "drives": "D,E,G",
+                        "max_projects": 3,
+                        "max_steps_each": 6,
+                        "refresh_census": False,
+                        "allow_internet": True,
+                        "allow_heavy": True,
+                        "only_broken": True,
+                    },
+                )
+            elif "census" in lowered:
+                add("reality.census", {"drives": "D,E,G", "only_broken": True, "depth": 2})
             elif "find project" in lowered or "find_project" in lowered:
                 import re as _re
                 m = _re.search(r"find\s+project\s+(.+)$", user_message or "", _re.I)
                 add("reality.find_project", {"name": (m.group(1).strip() if m else user_message)[:120]})
-            elif "inventory" in lowered and "solve" not in lowered:
+            elif "inventory" in lowered and "solve" not in lowered and "autonomy" not in lowered:
                 add("reality.inventory", {"max_per_drive": 30})
             elif "route" in lowered and "solve" not in lowered:
                 add("reality.route", {"goal": (user_message or "")[:2000]})
@@ -1198,12 +1247,21 @@ REGISTERED TOOLS:
             if not topic and any(k in lowered for k in ("united states", "untied states", "corporation")):
                 topic = user_message.strip()
             if research_url:
-                if "research.web" in self.protocol.tools:
-                    add("research.web", {"url": research_url.group(1), "topic": topic or "research", "limit": 24})
+                ru = research_url.group(1)
+                if (
+                    ("youtube.com" in ru.lower() or "youtu.be" in ru.lower())
+                    and "research.reach_youtube" in self.protocol.tools
+                ):
+                    add("research.reach_youtube", {"url": ru, "limit": 5})
+                elif "research.reach_web" in self.protocol.tools and ru.startswith("http"):
+                    # Prefer Agent-Reach/Jina for clean page reads when available
+                    add("research.reach_web", {"url": ru, "topic": topic or "research"})
+                elif "research.web" in self.protocol.tools:
+                    add("research.web", {"url": ru, "topic": topic or "research", "limit": 24})
                 elif "gamecraft.scrape" in self.protocol.tools:
-                    add("gamecraft.scrape", {"url": research_url.group(1), "topic": topic or "research"})
+                    add("gamecraft.scrape", {"url": ru, "topic": topic or "research"})
                 else:
-                    add("studio.scrape", {"url": research_url.group(1)})
+                    add("studio.scrape", {"url": ru})
             elif topic:
                 if "research.web" in self.protocol.tools:
                     add("research.web", {"topic": topic, "limit": 24})
@@ -1285,8 +1343,10 @@ REGISTERED TOOLS:
                 return calls[:3]
 
         # Knowledge questions — ANY subject (bridge schematics, history, how-tos…).
-        # No magic keyword required beyond sounding like a real ask for information.
-        if not calls and not drive_explore_msg:
+        # Skip deep discussion / hypothesis talk — that stays conversational.
+        from mythos_session_mode import discussion_request as _is_discussion
+
+        if not calls and not drive_explore_msg and not _is_discussion(user_message):
             knowledge = False
             if any(
                 k in lowered
@@ -1294,25 +1354,29 @@ REGISTERED TOOLS:
                     "how do i ",
                     "how to ",
                     "how can i ",
-                    "what is ",
-                    "what's ",
-                    "who is ",
-                    "who was ",
-                    "where is ",
-                    "tell me about ",
-                    "everything related",
-                    "every detail",
-                    "schematic",
-                    "schematics",
-                    "blueprint",
-                    "explain ",
+                    "look up ",
+                    "look it up",
+                    "google ",
+                    "search for ",
                     "find information",
                     "pull up ",
                     "go online",
+                    "schematic",
+                    "schematics",
+                    "blueprint",
+                    "everything related",
+                    "every detail",
                 )
             ):
                 knowledge = True
-            elif lowered.endswith("?") and len(lowered) > 12:
+            # Bare "what is X?" only when she asks for a factual lookup, not lore chat
+            elif (
+                any(k in lowered for k in ("what is ", "what's ", "who is ", "who was ", "tell me about "))
+                and any(
+                    k in lowered
+                    for k in ("look up", "online", "google", "research", "explain how to", "install")
+                )
+            ):
                 knowledge = True
             if knowledge:
                 topic = _normalize_topic(user_message) or user_message.strip()[:240]
@@ -3328,14 +3392,39 @@ REGISTERED TOOLS:
         action_flag = Path(APEX_ROOT) / "config" / "action_only.flag"
         action_only = action_flag.is_file() and session_mode != "talk"
 
-        from mythos_session_mode import cohesive_should_act, researchish_request
+        from mythos_session_mode import (
+            cohesive_should_act,
+            discussion_request,
+            format_discussion_thread_block,
+            get_discussion_thread,
+            researchish_request,
+            update_discussion_thread,
+        )
 
+        is_discussion = discussion_request(user_message)
+        try:
+            update_discussion_thread(user_message)
+        except Exception:
+            pass
+        # Stay in discussion mode while an active thread is open (short follow-ups included)
+        try:
+            if get_discussion_thread().get("active"):
+                is_discussion = True
+        except Exception:
+            pass
         intent_results = []
         intent_seed_payload = ""
         intent_seed_note = ""
         if cohesive_should_act(user_message, session_mode):
             intent_results = await self._run_intent_tools(user_message, history=history)
-        if session_mode == "research" or (researchish_request(user_message) and not intent_results):
+        # Never auto-web-search deep discussion / her own hypotheses
+        if (
+            not is_discussion
+            and (
+                session_mode == "research"
+                or (researchish_request(user_message) and not intent_results)
+            )
+        ):
             low_msg = (user_message or "").lower()
             heavy_ordered = any(
                 k in low_msg
@@ -3381,12 +3470,18 @@ REGISTERED TOOLS:
         else:
             intent_seed_note = intent_seed_note or ""
 
+        # Terminal = job tools that finish the turn. research.web / scrape are NOT terminal —
+        # their results must seed into full conversation with history (otherwise lore talk dies).
         _terminal = {
             "visionary.search", "visionary.dl", "visionary.yt", "visionary.learn",
-            "research.web", "gamecraft.scrape", "agent.loop", "coding.solve",
+            "agent.loop", "coding.solve",
             "brain.heavy", "brain.escalate", "brain.ensure", "brain.ram", "brain.status",
         }
-        if intent_tools and all(x in _terminal for x in intent_tools):
+        if (
+            not is_discussion
+            and intent_tools
+            and all(x in _terminal for x in intent_tools)
+        ):
             brief_bits = []
             for item in intent_results:
                 if "error" in item:
@@ -3456,25 +3551,32 @@ REGISTERED TOOLS:
             if mode == "FICTION"
             else "MODE: REAL — facts and actions only. Use tools. Cite tool results. Never simulate tasks."
         )
-        if session_mode == "talk":
+        if is_discussion or session_mode == "talk":
             mode_line = (
-                "MODE: COHESIVE PEER (talk hint) — infer intent, use tools when needed, finish the job. "
-                "Never dump drives for casual explore. Never invent talk-only excuses or fake URLs."
+                "MODE: COHESIVE PEER — answer the human beat first from this thread. "
+                "Hold prior turns (topics, corrections, hypotheses). No tools unless she asks to look up or act. "
+                "Never dump drives. Never pivot to games/seeds. Never invent talk-only excuses or fake URLs."
             )
+            if is_discussion:
+                mode_line += (
+                    "\nDEEP DISCUSSION ACTIVE: Stay on her topic. Use recent messages as ground truth. "
+                    "Do not research her hypothesis. Do not call agent.loop."
+                )
         elif session_mode == "research":
             mode_line = (
                 "MODE: RESEARCH — look things up with tools, then answer with sources. "
                 "Do not start file moves or game builds unless asked."
             )
-        if action_only:
+        if action_only and not is_discussion:
             mode_line += (
                 "\nACTION-ONLY FLAG IS ON: instruction dumps are banned. Call tools or ask one question."
             )
-        if session_mode == "talk":
+        if is_discussion or session_mode == "talk":
             collaboration_context = (
                 "TALK MODE GUARD: Meet her as a peer. Answer the human beat first. "
                 "Do NOT call stackforge.fleet_explore, stackforge.atlas, or sovereign_scan "
-                "unless she clearly asks about disks, drives, fleet, folder sizes, or storage."
+                "unless she clearly asks about disks, drives, fleet, folder sizes, or storage. "
+                "Do NOT call research.web / agent.loop / gamecraft for lore or hypothesis talk."
             )
         else:
             collaboration_context = self.build_collaboration_context(user_message)
@@ -3495,16 +3597,50 @@ REGISTERED TOOLS:
             }
         ]
 
-        for entry in filter_messages_for_model(history, limit=24):
+        # Deep talk needs more recent thread; work/research can stay leaner
+        hist_limit = 48 if is_discussion else (36 if session_mode == "talk" else 24)
+        # Keep the thread opening + recent turns so long sessions still know "what this is about"
+        history_for_model = list(history or [])
+        try:
+            thread = get_discussion_thread()
+            seed = (thread.get("seed_message") or "").strip()
+            if thread.get("active") and seed:
+                already = any(
+                    (e.get("message") or "")[:200] == seed[:200]
+                    for e in history_for_model
+                    if e.get("from") != "MYTHOS"
+                )
+                if not already:
+                    history_for_model = [
+                        {"from": "CREATOR", "message": f"[Thread opening]\n{seed[:1500]}"}
+                    ] + history_for_model
+        except Exception:
+            pass
+        for entry in filter_messages_for_model(history_for_model, limit=hist_limit):
             text = entry.get("message", "")
             if not text:
                 continue
             role = "assistant" if entry.get("from") == "MYTHOS" else "user"
+            # Prefer fuller turns for discussion so hypotheses survive
+            if is_discussion and len(text) > 4000:
+                text = text[:4000] + "…"
             messages.append({"role": role, "content": text})
+
+        # Re-inject living thread spine right before the user turn
+        try:
+            spine = format_discussion_thread_block(max_chars=1800)
+            if spine and is_discussion:
+                messages.append({"role": "system", "content": spine})
+        except Exception:
+            pass
 
         soft_plan = ""
         try:
-            if cohesive_should_act(user_message, session_mode) and (self.active_model or detect_chat_model()):
+            if (
+                not is_discussion
+                and cohesive_should_act(user_message, session_mode)
+                and (self.active_model or detect_chat_model())
+            ):
                 client_plan = get_ollama_client()
                 planned = await self._ollama_chat(
                     client_plan,
@@ -3517,13 +3653,16 @@ REGISTERED TOOLS:
                                 "STEPS: 2-5 short bullets\n"
                                 "TOOLS: comma-separated tool names if any "
                                 "(visionary.search, research.web, agent.loop, coding.solve, brain.escalate, ...)\n"
-                                "No fluff. Infer typos. Do not ask her for URLs."
+                                "No fluff. Infer typos. Do not ask her for URLs. "
+                                "If this is lore/hypothesis/philosophy chat, reply TOOLS: none"
                             ),
                         },
                         {"role": "user", "content": (user_message or "")[:2000]},
                     ],
                 )
                 soft_plan = ((planned.get("message") or {}).get("content") or "").strip()[:1500]
+                if soft_plan and re.search(r"(?im)^TOOLS:\s*none\b", soft_plan):
+                    soft_plan = ""
                 if soft_plan:
                     try:
                         from mythos_session_mode import set_current_goal

@@ -17,6 +17,7 @@ GOALS_PATH = STATE_DIR / "presence_goals.json"
 
 VALID_MODES = ("talk", "work", "research")
 DEFAULT_MODE = "talk"
+THREAD_PATH = STATE_DIR / "discussion_thread.json"
 
 _MODE_SWITCH = re.compile(
     r"(?i)^\s*(?:switch\s+to\s+|set\s+mode\s+|mode\s*[:=]?\s*|go\s+to\s+)?"
@@ -138,6 +139,8 @@ SESSION MODE: TALK (conversation — default; soft gate, not a wall)
 - Priority: be present, malleable, conversational. Banter and opinions are OK.
 - Talk / Work / Research overlap: if she asks to look something up, watch/download YouTube,
   explore the internet, or run a named tool — DO IT. Do not invent "talk-only" excuses.
+- DEEP DISCUSSION (lore, tablets, myths, philosophy, hypotheses, "what if"): stay in-thread.
+  Hold her corrections across turns. Do not web-search her hypothesis. Do not pivot to games/seeds.
 - NEVER dump D/E/G drive inventory for casual "explore possibilities / explore the internet".
   Fleet explore is ONLY for disks, folders, storage, sanctuary layout.
 - Do NOT tunnel into living_game / village / quest deliverables unless she explicitly asks to build that.
@@ -223,7 +226,7 @@ def is_lookup_meta(text: str) -> bool:
 
 
 def explicit_tool_request(text: str) -> bool:
-    """True when Talk mode should still run tools."""
+    """True when Talk mode should still run tools — verbs that mean act/look up, not chat questions."""
     low = (text or "").lower()
     if disk_or_fleet_request(low):
         return True
@@ -239,8 +242,6 @@ def explicit_tool_request(text: str) -> bool:
         "google it",
         "search for",
         "search online",
-        "research ",
-        "find out",
         "scrape ",
         "heal ",
         "rebuild ",
@@ -259,17 +260,13 @@ def explicit_tool_request(text: str) -> bool:
         "run stackforge",
         "move my ",
         "relocate ",
-        "everything related",
-        "every detail",
-        "how do i ",
-        "how to ",
-        "what is ",
-        "tell me about ",
-        "schematic",
-        "blueprint",
         "pull up ",
         "research.web",
         "research.lookup",
+        "research.reach",
+        "research.reach_web",
+        "research.reach_youtube",
+        "research.reach_doctor",
         "brain.heavy",
         "brain.think",
         "brain.ensure",
@@ -322,7 +319,9 @@ def explicit_tool_request(text: str) -> bool:
         "start colibri master",
         "bring up colibri",
         "keep going",
-        "continue",
+        "continue from",
+        "continue the",
+        "continue where",
         "fix it",
         "fix this",
         "build it",
@@ -332,8 +331,8 @@ def explicit_tool_request(text: str) -> bool:
         "do what we were doing",
         "finish the job",
         "write code",
-        "edit the",
-        "investigate",
+        "edit the file",
+        "edit this file",
     )
     if any(m in low for m in markers):
         return True
@@ -348,8 +347,10 @@ def explicit_tool_request(text: str) -> bool:
 
 
 def researchish_request(text: str) -> bool:
-    """True when Talk should run lookup/video tools (modes are soft, not walls)."""
+    """True when Talk should run lookup tools — explicit lookup, not every question."""
     low = (text or "").lower()
+    if discussion_request(low):
+        return False
     if explicit_tool_request(low):
         return True
     cues = (
@@ -361,22 +362,103 @@ def researchish_request(text: str) -> bool:
         "look it up",
         "google",
         "search for",
-        "find out",
+        "find out about",
+        "find out who",
+        "find out what",
+        "find out when",
+        "find out where",
         "go online",
-        "the internet",
         "from the internet",
         "explore the internet",
-        "pick a project",
-        "download",
-        "multiverse",
-        "parallel universe",
-        "tell me about",
-        "what is ",
-        "how do ",
-        "how to ",
+        "download the",
+        "download a",
     )
     return any(c in low for c in cues)
 
+
+def discussion_request(text: str) -> bool:
+    """True for multi-turn ideas / lore / hypothesis — answer in conversation, do not tool-hijack."""
+    low = (text or "").lower().strip()
+    if not low:
+        return False
+    if explicit_tool_request(low):
+        return False
+    # Code/heal work is never "discussion" (check cues only — do not call coding_job_request)
+    if any(
+        k in low
+        for k in (
+            ".py",
+            ".js",
+            "fix the code",
+            "write code",
+            "agent.loop",
+            "coding.solve",
+            "stackforge",
+            "heal my",
+            "reality.",
+        )
+    ):
+        return False
+    cues = (
+        "hypothesis",
+        "hypothes",
+        "hyposthes",  # common typo of hypothesis
+        "i wonder",
+        "i'm wondering",
+        "im wondering",
+        "i am wondering",
+        "what if ",
+        "conspiracy",
+        "firmament",
+        "anunnaki",
+        "gilgamesh",
+        "sumerian",
+        "samarian",
+        "emerald tablet",
+        "thoth",
+        "yin yang",
+        "yin-yang",
+        "as above",
+        "as below",
+        "what is above",
+        "forget the game",
+        "not a god",
+        "weren't gods",
+        "were not gods",
+        "my hypothesis",
+        "proposed",
+        "based on the previous",
+        "retain what",
+        "drawing board",
+        "philosophy",
+        "metaphysic",
+        "tablets",
+        "cuneiform",
+        "enuma elish",
+        "bible",
+        "flat earth",
+        "spherical",
+        "star people",
+        "starp people",
+    )
+    if any(c in low for c in cues):
+        return True
+    # Long reflective turns without tool verbs → discussion
+    if len(low) > 220 and not any(
+        k in low
+        for k in (
+            "look up",
+            "google",
+            "download",
+            "fix the code",
+            "write code",
+            "agent.loop",
+            "heal my",
+            "reality.",
+        )
+    ):
+        return True
+    return False
 
 
 def _goals_load() -> dict:
@@ -458,6 +540,8 @@ def coding_job_request(text: str) -> bool:
     low = (text or "").lower()
     if disk_or_fleet_request(low):
         return False
+    if discussion_request(low):
+        return False
     cues = (
         "agent.loop",
         "agent loop",
@@ -468,7 +552,6 @@ def coding_job_request(text: str) -> bool:
         "write code",
         "fix the code",
         "fix this bug",
-        "build a",
         "implement ",
         "refactor ",
         "debug ",
@@ -482,15 +565,26 @@ def coding_job_request(text: str) -> bool:
     )
     if any(c in low for c in cues):
         return True
-    if re.search(r"(fix|build|implement|debug|refactor).+(code|bug|script|module|function|file|project)", low):
+    # "build a" alone matched "build a planet" in lore talk — require code artifact words
+    if re.search(
+        r"\b(build|fix|implement|debug|refactor)\b.+\b(code|bug|script|module|function|file|project|app|program|software)\b",
+        low,
+    ):
+        return True
+    if re.search(r"\bbuild (me )?(a |an )?(web |cli |python |js )?(app|script|tool|bot|game)\b", low):
         return True
     return False
 
 
 def cohesive_should_act(text: str, session_mode: str | None = None) -> bool:
-    """Modes are soft: act whenever the ask implies work/lookup/continue."""
+    """Modes are soft: act when ask implies work/lookup — never hijack deep discussion."""
     mode = (session_mode or get_mode() or "talk").lower()
+    if discussion_request(text) and not explicit_tool_request(text):
+        return False
     if mode in ("work", "research"):
+        # Even in research mode, pure hypothesis / lore discussion stays conversational
+        if discussion_request(text):
+            return False
         return True
     return (
         explicit_tool_request(text)
@@ -498,6 +592,234 @@ def cohesive_should_act(text: str, session_mode: str | None = None) -> bool:
         or continue_goal_request(text)
         or coding_job_request(text)
     )
+
+
+def _thread_load() -> dict:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if THREAD_PATH.is_file():
+        try:
+            data = json.loads(THREAD_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {
+        "active": False,
+        "topic": "",
+        "principles": [],
+        "keywords": [],
+        "seed_message": "",
+        "turn_count": 0,
+        "updated": _now(),
+    }
+
+
+def _thread_save(data: dict) -> dict:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    data["updated"] = _now()
+    THREAD_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return data
+
+
+def clear_discussion_thread(note: str = "") -> dict:
+    data = _thread_load()
+    data.update(
+        {
+            "active": False,
+            "topic": "",
+            "principles": [],
+            "keywords": [],
+            "seed_message": "",
+            "turn_count": 0,
+            "closed_note": (note or "")[:200],
+        }
+    )
+    return _thread_save(data)
+
+
+def _extract_discussion_keywords(text: str) -> list[str]:
+    low = (text or "").lower()
+    bag = (
+        "gilgamesh",
+        "sumerian",
+        "samarian",
+        "thoth",
+        "emerald tablet",
+        "anunnaki",
+        "enki",
+        "enlil",
+        "firmament",
+        "as above",
+        "as below",
+        "yin yang",
+        "bible",
+        "cuneiform",
+        "tablets",
+        "conspiracy",
+        "flat earth",
+        "spherical",
+        "star people",
+        "energy",
+        "hypothesis",
+    )
+    found = [k for k in bag if k in low]
+    return found[:16]
+
+
+def _extract_discussion_principles(text: str) -> list[str]:
+    """Capture creator framing so Mythos does not ask her to restate it."""
+    low = (text or "").lower()
+    out: list[str] = []
+    if any(x in low for x in ("not a god", "weren't gods", "were not gods", "not gods", "aren't gods")) or re.search(
+        r"\b(not|never|none|aren'?t|weren'?t).{0,48}\bgods?\b",
+        low,
+    ):
+        out.append("Framing: these beings are NOT gods — advanced tech / star people ≠ divinity.")
+    if "build a planet" in low or "creating planets" in low or "create planets" in low or "build a universe" in low:
+        out.append("Framing: they do not create planets/universes; at most alter existing structures.")
+    if "firmament" in low:
+        out.append("Creator exploring firmament / above-below duality as a working hypothesis.")
+    if "yin yang" in low or "yin-yang" in low:
+        out.append("Creator links duality (yin-yang / as above so below) to the hypothesis.")
+    if "energy" in low and ("solid" in low or "die" in low):
+        out.append("Creator idea: energy ↔ solid form; death returns to energy (hypothesis, not dogma).")
+    if "forget the game" in low or "forget the game for now" in low:
+        out.append("Park the game topic until she reopens it.")
+    if "hypothes" in low or "hyposthes" in low or "what if " in low:
+        out.append("Treat her statements as her hypothesis/discussion — do not web-search to 'prove' them.")
+    if "drawing board" in low or "retain what" in low:
+        out.append("She needs continuity: never force her to re-brief the thread.")
+    # Dedupe while preserving order
+    seen = set()
+    uniq = []
+    for p in out:
+        if p not in seen:
+            seen.add(p)
+            uniq.append(p)
+    return uniq
+
+
+def _topic_label_from_keywords(keywords: list[str], fallback: str = "") -> str:
+    if keywords:
+        # Prefer named lore cluster
+        prefer = [
+            "gilgamesh",
+            "thoth",
+            "emerald tablet",
+            "anunnaki",
+            "sumerian",
+            "samarian",
+            "firmament",
+            "tablets",
+        ]
+        ordered = [k for k in prefer if k in keywords] + [k for k in keywords if k not in prefer]
+        return " / ".join(ordered[:6])
+    fb = (fallback or "").strip().replace("\n", " ")
+    return (fb[:120] + "…") if len(fb) > 120 else fb
+
+
+def should_clear_discussion_thread(text: str) -> bool:
+    low = (text or "").lower().strip()
+    if not low:
+        return False
+    clears = (
+        "new topic",
+        "different topic",
+        "change the subject",
+        "forget that discussion",
+        "forget this discussion",
+        "end this discussion",
+        "close this thread",
+        "park this discussion",
+        "back to work",
+        "switch to work",
+        "heal my drives",
+        "reality machine",
+    )
+    if any(c in low for c in clears):
+        return True
+    if coding_job_request(low) and not discussion_request(low):
+        return True
+    return False
+
+
+def update_discussion_thread(user_message: str) -> dict:
+    """
+    Persist the living discussion spine locally so long creative talks
+    do not require the creator to re-explain from scratch every few turns.
+    """
+    text = (user_message or "").strip()
+    if not text:
+        return _thread_load()
+    if should_clear_discussion_thread(text):
+        return clear_discussion_thread(note="cleared by creator intent")
+
+    data = _thread_load()
+    if not discussion_request(text) and not data.get("active"):
+        return data
+
+    # If she is still in an active thread, keep updating even on short follow-ups
+    if not discussion_request(text) and data.get("active"):
+        # Short acknowledgements still count toward continuity
+        if len(text) < 12 and text.lower() in {"yes", "no", "ok", "okay", "yeah", "yep", "right"}:
+            data["turn_count"] = int(data.get("turn_count") or 0) + 1
+            return _thread_save(data)
+        if not discussion_request(text) and len(text) < 40 and not any(
+            k in text.lower() for k in (data.get("keywords") or [])
+        ):
+            return data
+
+    keywords = list(dict.fromkeys((data.get("keywords") or []) + _extract_discussion_keywords(text)))[:20]
+    principles = list(data.get("principles") or [])
+    for p in _extract_discussion_principles(text):
+        if p not in principles:
+            principles.append(p)
+    principles = principles[-12:]
+
+    if not data.get("seed_message") or not data.get("active"):
+        data["seed_message"] = text[:1500]
+        data["opened_at"] = _now()
+
+    data["active"] = True
+    data["keywords"] = keywords
+    data["principles"] = principles
+    data["topic"] = _topic_label_from_keywords(keywords, data.get("seed_message") or text)
+    data["turn_count"] = int(data.get("turn_count") or 0) + 1
+    data["last_user_excerpt"] = text[:800]
+    return _thread_save(data)
+
+
+def get_discussion_thread() -> dict:
+    return _thread_load()
+
+
+def format_discussion_thread_block(max_chars: int = 2200) -> str:
+    """Prompt block — always-on spine for the active long discussion."""
+    data = _thread_load()
+    if not data.get("active"):
+        return ""
+    lines = [
+        "ACTIVE DISCUSSION THREAD (local only — hold this across the whole talk):",
+        f"- Topic: {data.get('topic') or '(open thread)'}",
+        f"- Turns in thread: {data.get('turn_count') or 0}",
+        "- Rule: She may speak at length for hours. Do NOT ask her to restate earlier parts.",
+        "- Rule: Keep her lingo and framing. Never pivot to games/seeds/tools unless she asks.",
+    ]
+    principles = data.get("principles") or []
+    if principles:
+        lines.append("- Standing principles from her (obey these):")
+        for p in principles:
+            lines.append(f"  • {p}")
+    seed = (data.get("seed_message") or "").strip()
+    if seed:
+        lines.append("- Thread opening (her words, verbatim excerpt):")
+        lines.append(f"  {seed[:700]}")
+    last = (data.get("last_user_excerpt") or "").strip()
+    if last and last != seed:
+        lines.append("- Latest beat (excerpt):")
+        lines.append(f"  {last[:500]}")
+    block = "\n".join(lines)
+    return block[:max_chars]
 
 
 def stuck_reset() -> dict[str, Any]:
@@ -579,6 +901,11 @@ def stuck_reset() -> dict[str, Any]:
     # Soft switch toward talk so she can converse again
     mode_result = set_mode("talk", note="auto after unstick")
     actions.append("switched to talk mode")
+    try:
+        clear_discussion_thread(note="stuck_reset")
+        actions.append("cleared discussion thread")
+    except Exception as exc:
+        actions.append(f"thread skip: {exc}")
 
     return {
         "ok": True,

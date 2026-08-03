@@ -220,6 +220,117 @@ def _load_service_limbs(protocol, quiet: bool = True) -> None:
             },
         },
     )
+    # Agent-Reach — richer channels (YouTube captions, web reader, GH, RSS, …)
+    try:
+        from advanced_shards.agent_reach_limb import AgentReachLimb
+
+        reach = AgentReachLimb()
+        protocol.register(
+            "research.reach_status",
+            reach,
+            "status",
+            {
+                "description": "Agent-Reach limb status (CLI path, readiness)",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        )
+        protocol.register(
+            "research.reach_doctor",
+            reach,
+            "doctor",
+            {
+                "description": "Check which Agent-Reach internet channels are working",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "channels": {
+                            "type": "string",
+                            "description": "Optional comma-separated channel names",
+                        },
+                    },
+                },
+            },
+        )
+        protocol.register(
+            "research.reach_get",
+            reach,
+            "get",
+            {
+                "description": (
+                    "Read from an Agent-Reach channel (web, youtube, github, rss, …). "
+                    "Prefer for YouTube transcripts / richer fetches; use research.web for simple lookups."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string"},
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "default": 10},
+                        "max_tokens": {"type": "integer", "default": 4000},
+                    },
+                    "required": ["target"],
+                },
+            },
+        )
+        protocol.register(
+            "research.reach_web",
+            reach,
+            "web",
+            {
+                "description": (
+                    "Fetch a URL or search via Agent-Reach (Jina/Exa when installed). "
+                    "Falls back to Jina Reader for bare URLs."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "topic": {"type": "string"},
+                        "query": {"type": "string"},
+                    },
+                },
+            },
+        )
+        protocol.register(
+            "research.reach_youtube",
+            reach,
+            "youtube",
+            {
+                "description": "YouTube metadata, transcript, or search via Agent-Reach / yt-dlp",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "default": 5},
+                    },
+                },
+            },
+        )
+        protocol.register(
+            "research.reach",
+            reach,
+            "reach",
+            {
+                "description": (
+                    "One-shot Agent-Reach router: action=doctor|get|web|youtube. "
+                    "Use when the creator wants YouTube captions, rich URL read, or channel doctor."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "default": "get"},
+                        "target": {"type": "string"},
+                        "query": {"type": "string"},
+                        "url": {"type": "string"},
+                        "topic": {"type": "string"},
+                        "limit": {"type": "integer", "default": 10},
+                    },
+                },
+            },
+        )
+    except Exception:
+        pass
     protocol.register(
         "gamecraft.generate_art",
         craft,
@@ -638,11 +749,48 @@ def _load_service_limbs(protocol, quiet: bool = True) -> None:
         },
     )
     protocol.register(
+        "reality.census",
+        reality,
+        "census",
+        {
+            "description": "Scan drives and queue programs by content (names do not matter)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "drives": {"type": "string", "default": "D,E,G"},
+                    "max_projects": {"type": "integer", "default": 80},
+                    "only_broken": {"type": "boolean", "default": True},
+                    "depth": {"type": "integer", "default": 2},
+                },
+            },
+        },
+    )
+    protocol.register(
+        "reality.autonomy",
+        reality,
+        "autonomy",
+        {
+            "description": "Heal programs on drives without pointing — internet on, finished programs not reports",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "drives": {"type": "string", "default": "D,E,G"},
+                    "max_projects": {"type": "integer", "default": 3},
+                    "max_steps_each": {"type": "integer", "default": 6},
+                    "refresh_census": {"type": "boolean", "default": True},
+                    "allow_internet": {"type": "boolean", "default": True},
+                    "allow_heavy": {"type": "boolean", "default": True},
+                    "only_broken": {"type": "boolean", "default": True},
+                },
+            },
+        },
+    )
+    protocol.register(
         "reality.continue",
         reality,
         "continue_solve",
         {
-            "description": "Resume the last Reality Machine goal until done",
+            "description": "Keep draining heal queue / last Reality Machine goal until programs are finished",
             "parameters": {
                 "type": "object",
                 "properties": {"max_steps": {"type": "integer", "default": 8}},
