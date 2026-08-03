@@ -19,10 +19,42 @@ from typing import Any
 
 DEFAULT_COLIBRI_API = "http://127.0.0.1:8010/v1"
 DEFAULT_GGUF_API = "http://127.0.0.1:8088/v1"
+DEFAULT_OLLAMA_API = "http://127.0.0.1:11434/v1"
 COLIBRI_SERVE_BAT = Path(r"D:\colibri\START_COLIBRI_SERVE.bat")
 COLIBRI_MODEL_DIR = Path(os.environ.get("COLI_MODEL") or r"D:\glm52_i4")
 # Rough floor: refuse auto-start until weights look substantially present (~full pack ~370GB)
 MIN_MODEL_BYTES = 300 * (1024**3)  # 300 GB — do not start mid-download
+# Windows CPU Colibri OOMs mid-prefill below this free RAM on ~15GB boxes
+COLIBRI_MIN_FREE_GB = float(os.environ.get("MYTHOS_COLIBRI_MIN_FREE_GB") or 8.0)
+# Prefer larger local Ollama models when Colibri chat cannot finish
+OLLAMA_HEAVY_PREFER = [
+    "qwen3-coder:30b",
+    "qwen3:30b",
+    "nemotron-nano-8gb:latest",
+    "nemotron-nano:latest",
+    "qwen2.5-coder:7b",
+    "huihui_ai/qwen2.5-abliterate:7b",
+    "llama3.1:8b",
+]
+# When free RAM is tight, skip 30B-class locals (they OOM like Colibri).
+# Under ~6GB free, nemotron-nano-8gb also OOMs (~12GB alloc) — prefer true 7B first.
+OLLAMA_HEAVY_LOW_RAM = [
+    "qwen2.5-coder:7b",
+    "huihui_ai/qwen2.5-abliterate:7b",
+    "llama3.1:8b",
+    "gemma2:9b",
+    "phi3:medium",
+    "nemotron-nano-8gb:latest",
+    "nemotron-nano:latest",
+]
+OLLAMA_HEAVY_MID_RAM = [
+    "nemotron-nano-8gb:latest",
+    "nemotron-nano:latest",
+    "qwen2.5-coder:7b",
+    "huihui_ai/qwen2.5-abliterate:7b",
+    "llama3.1:8b",
+    "gemma2:9b",
+]
 
 
 def _now() -> str:
@@ -61,6 +93,66 @@ def _cloud_api_base() -> str:
 def _cloud_model_name() -> str:
     return (os.environ.get("MYTHOS_HEAVY_CLOUD_MODEL") or "gpt-4o-mini").strip()
 
+
+def _free_ram_gb() -> float | None:
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return round(stat.ullAvailPhys / (1024**3), 2)
+    except Exception:
+        return None
+    return None
+
+
+def _is_colibri_base(base: str) -> bool:
+    b = (base or "").lower()
+    return ":8010" in b or ":8000" in b or "colibri" in b
+
+
+def _colibri_chat_viable() -> dict[str, Any]:
+    """Models-up is not enough — chat OOM slab if free RAM is too low."""
+    free = _free_ram_gb()
+    need = COLIBRI_MIN_FREE_GB
+    ok = free is not None and free >= need
+    return {
+        "ok": ok,
+        "free_gb": free,
+        "need_free_gb": need,
+        "reason": None
+        if ok
+        else (
+            f"only {free} GB free - Colibri chat needs >={need} GB free on this Windows CPU build "
+            "(otherwise OOM slab mid-prefill while /v1/models still looks healthy)"
+        ),
+    }
+
+
+def _first_model_id(probe: dict[str, Any]) -> str:
+    body = probe.get("body") or ""
+    try:
+        data = json.loads(body)
+        rows = data.get("data") or []
+        if rows and isinstance(rows[0], dict) and rows[0].get("id"):
+            return str(rows[0]["id"])
+    except Exception:
+        pass
+    return ""
 
 
 def _probe(base: str, timeout: float = 3.0) -> dict[str, Any]:
@@ -218,6 +310,168 @@ def _try_cloud_ready() -> dict[str, Any]:
     return {"ok": False, "error": probe.get("error") or "cloud unreachable", "api": cloud_base, "probe": probe}
 
 
+def _try_gguf_ready() -> dict[str, Any]:
+    probe = _probe(DEFAULT_GGUF_API, timeout=4.0)
+    if not probe.get("ok"):
+        return {"ok": False, "skipped": True, "reason": "GGUF :8088 not listening", "probe": probe}
+    model = _first_model_id(probe) or (os.environ.get("MYTHOS_GGUF_MODEL") or "").strip() or "local-gguf"
+    os.environ["MYTHOS_HEAVY_API"] = DEFAULT_GGUF_API
+    os.environ["MYTHOS_HEAVY_MODEL"] = model
+    return {
+        "ok": True,
+        "api": DEFAULT_GGUF_API,
+        "switched_to": "gguf_8088",
+        "model": model,
+        "probe": probe,
+        "note": "Using GGUF llama-server on :8088",
+    }
+
+
+def _ollama_installed_names() -> list[str]:
+    try:
+        req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return [str(m.get("name") or "") for m in (data.get("models") or []) if m.get("name")]
+    except Exception:
+        return []
+
+
+def _try_ollama_heavy(prefer: list[str] | None = None) -> dict[str, Any]:
+    """Local MoE/coding fallback while Colibri chat is physics-blocked."""
+    names = _ollama_installed_names()
+    if not names:
+        return {"ok": False, "skipped": True, "reason": "Ollama not reachable or no models"}
+    free = _free_ram_gb()
+    prefer_env = (os.environ.get("MYTHOS_OLLAMA_HEAVY_MODEL") or "").strip()
+    if prefer is None:
+        # 30B-class needs ~12GB+; nemotron-nano also ~12GB alloc — pick by free RAM
+        if free is not None and free < 6.0:
+            prefer = list(OLLAMA_HEAVY_LOW_RAM)
+        elif free is not None and free < 10.0:
+            prefer = list(OLLAMA_HEAVY_MID_RAM)
+        else:
+            prefer = list(OLLAMA_HEAVY_PREFER)
+    candidates: list[str] = []
+    if prefer_env and prefer_env in names:
+        candidates.append(prefer_env)
+    lower = {n.lower(): n for n in names}
+    for want in prefer:
+        if want.lower() in lower:
+            n = lower[want.lower()]
+            if n not in candidates:
+                candidates.append(n)
+            continue
+        stem = want.lower().split(":")[0]
+        for n in names:
+            if n.lower().startswith(stem) and n not in candidates:
+                candidates.append(n)
+                break
+    if not candidates:
+        for n in names:
+            nl = n.lower()
+            if "embed" in nl or "moondream" in nl:
+                continue
+            candidates.append(n)
+            break
+    if not candidates:
+        return {"ok": False, "error": "no suitable Ollama heavy model installed", "available": names[:12]}
+    chosen = candidates[0]
+    os.environ["MYTHOS_HEAVY_API"] = DEFAULT_OLLAMA_API
+    os.environ["MYTHOS_HEAVY_MODEL"] = chosen
+    return {
+        "ok": True,
+        "api": DEFAULT_OLLAMA_API,
+        "switched_to": "ollama_heavy",
+        "model": chosen,
+        "candidates": candidates[:6],
+        "free_gb": free,
+        "available_sample": names[:8],
+        "note": "Colibri chat blocked/OOM - using local Ollama heavy model (daily chat path unchanged)",
+    }
+
+
+def _pick_heavy_fallback(reason: str = "") -> dict[str, Any]:
+    """Cascade: GGUF -> Ollama local heavy -> gated cloud."""
+    trail: list[dict[str, Any]] = [{"reason": reason}] if reason else []
+    gguf = _try_gguf_ready()
+    trail.append({"gguf": {k: gguf.get(k) for k in ("ok", "skipped", "reason", "model", "switched_to")}})
+    if gguf.get("ok"):
+        gguf["fallback_trail"] = trail
+        return gguf
+    ollama = _try_ollama_heavy()
+    trail.append(
+        {
+            "ollama": {
+                k: ollama.get(k)
+                for k in ("ok", "skipped", "reason", "model", "switched_to", "error", "candidates", "free_gb")
+            }
+        }
+    )
+    if ollama.get("ok"):
+        ollama["fallback_trail"] = trail
+        return ollama
+    cloud = _try_cloud_ready()
+    trail.append({"cloud": {k: cloud.get(k) for k in ("ok", "skipped", "reason", "model", "switched_to", "error")}})
+    cloud["fallback_trail"] = trail
+    return cloud
+
+
+def _chat_with_ollama_cascade(
+    *,
+    messages: list[dict[str, str]],
+    temperature: float,
+    max_tokens: int,
+    first: dict[str, Any],
+) -> dict[str, Any]:
+    """Try chosen Ollama model; on OOM walk remaining candidates then cloud."""
+    candidates = list(first.get("candidates") or [first.get("model")])
+    errors: list[dict[str, Any]] = []
+    last: dict[str, Any] = {"ok": False, "error": "no ollama candidates"}
+    for model in candidates:
+        if not model:
+            continue
+        os.environ["MYTHOS_HEAVY_API"] = DEFAULT_OLLAMA_API
+        os.environ["MYTHOS_HEAVY_MODEL"] = str(model)
+        last = _chat_completions(
+            base=DEFAULT_OLLAMA_API,
+            messages=messages,
+            model=str(model),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=300.0,
+        )
+        last["api"] = DEFAULT_OLLAMA_API
+        last["model_used"] = str(model)
+        if last.get("ok"):
+            last["switched_to"] = "ollama_heavy"
+            last["fallback_errors"] = errors or None
+            return last
+        err = str(last.get("error") or "")
+        errors.append({"model": model, "error": err[:240]})
+        # Only continue on OOM / alloc failures; stop on other hard errors after first
+        low = err.lower()
+        if not any(x in low for x in ("out-of-memory", "oom", "failed to allocate", "unable to allocate")):
+            break
+    cloud = _try_cloud_ready()
+    if cloud.get("ok"):
+        last = _chat_completions(
+            base=_api_base(),
+            messages=messages,
+            model=_model_name(),
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        last["api"] = _api_base()
+        last["model_used"] = _model_name()
+        last["switched_to"] = "cloud"
+        last["fallback_errors"] = errors
+        return last
+    last["fallback_errors"] = errors
+    last["cloud"] = {k: cloud.get(k) for k in ("ok", "skipped", "reason", "error")}
+    return last
+
+
 class HeavyBrainLimb:
     """On-demand frontier brain (Colibri / GGUF) — not daily chat."""
 
@@ -241,9 +495,13 @@ class HeavyBrainLimb:
             "serve_bat_exists": COLIBRI_SERVE_BAT.is_file(),
             "gguf_fallback_8088": gguf_probe,
             "tools": ["brain.status", "brain.ram", "brain.ensure", "brain.think", "brain.heavy", "brain.escalate"],
-            "note": "Agents call brain.heavy when stuck. Escalation: Colibri → GGUF :8088 → gated cloud (MYTHOS_ALLOW_CLOUD_HEAVY).",
+            "note": (
+                "Agents call brain.heavy when stuck. Escalation: "
+                "Colibri (if >=8GB free) -> GGUF :8088 -> Ollama heavy (qwen3-coder/nemotron) -> gated cloud."
+            ),
             "cloud_allowed": _cloud_allowed(),
             "cloud_api": _cloud_api_base() or None,
+            "colibri_chat_viable": _colibri_chat_viable(),
         }
 
     def ram(self) -> dict[str, Any]:
@@ -389,49 +647,145 @@ class HeavyBrainLimb:
         ensure_up: bool = True,
         temperature: float = 0.3,
     ) -> dict[str, Any]:
-        """Ask the heavy brain one shot. Auto-ensure server if ensure_up."""
+        """Ask the heavy brain one shot. Auto-ensure + cascade on Colibri OOM/low-RAM."""
         prompt = (prompt or "").strip()
         if not prompt:
             return {"ok": False, "error": "prompt required"}
 
+        fallback_meta: dict[str, Any] | None = None
         if ensure_up:
             ready = self.ensure(wait_sec=60, start_if_down=True)
             if not ready.get("ok"):
-                cloud = _try_cloud_ready()
-                if cloud.get("ok"):
-                    ready = cloud
+                fb = _pick_heavy_fallback(reason=str(ready.get("error") or "heavy ensure failed"))
+                if fb.get("ok"):
+                    ready = fb
+                    fallback_meta = fb
                 else:
                     return {
                         "ok": False,
                         "error": ready.get("error") or "heavy brain not available",
                         "ensure": ready,
-                        "cloud": cloud,
-                        "fallback": "daily Ollama still available for normal chat",
+                        "fallback": fb,
+                        "daily_chat": "Ollama still available for normal chat",
                     }
 
         base = _api_base()
+        # Skip doomed Colibri chat when free RAM is too low (models-up ≠ chat-ready)
+        if _is_colibri_base(base):
+            viable = _colibri_chat_viable()
+            if not viable.get("ok"):
+                fb = _pick_heavy_fallback(reason=str(viable.get("reason") or "colibri ram gate"))
+                if fb.get("ok"):
+                    base = _api_base()
+                    fallback_meta = fb
+                else:
+                    return {
+                        "ok": False,
+                        "error": viable.get("reason") or "Colibri chat not viable",
+                        "colibri_chat_viable": viable,
+                        "fallback": fb,
+                        "hint": "Free >=8GB RAM for Colibri, start GGUF :8088, or enable cloud heavy",
+                        "at": _now(),
+                    }
+
         sys_msg = (system or "").strip() or (
-            "You are Mythos heavy brain (Colibri/GLM). Be concrete, correct, and actionable. "
-            "You assist Apex/Codex on hard jobs — plans, debugging, deep reasoning."
+            "You are Mythos heavy brain. Be concrete, correct, and actionable. "
+            "You assist Apex/Codex on hard jobs - plans, debugging, deep reasoning."
         )
         messages = [
             {"role": "system", "content": sys_msg},
             {"role": "user", "content": prompt[:24000]},
         ]
         t0 = time.time()
-        result = _chat_completions(
-            base=base,
-            messages=messages,
-            model=_model_name(),
-            temperature=float(temperature or 0.3),
-            max_tokens=max(64, min(int(max_tokens or 1200), 8192)),
-        )
+        max_tok = max(64, min(int(max_tokens or 1200), 8192))
+        temp = float(temperature or 0.3)
+
+        # Already routed off Colibri (RAM gate / ensure fail) -> talk to that backend
+        if fallback_meta and fallback_meta.get("switched_to") == "ollama_heavy":
+            result = _chat_with_ollama_cascade(
+                messages=messages,
+                temperature=temp,
+                max_tokens=max_tok,
+                first=fallback_meta,
+            )
+        elif fallback_meta and fallback_meta.get("switched_to") in {"gguf_8088", "cloud"}:
+            result = _chat_completions(
+                base=_api_base(),
+                messages=messages,
+                model=_model_name(),
+                temperature=temp,
+                max_tokens=max_tok,
+            )
+            result["api"] = _api_base()
+            result["model_used"] = _model_name()
+            result["switched_to"] = fallback_meta.get("switched_to")
+        else:
+            result = _chat_completions(
+                base=base,
+                messages=messages,
+                model=_model_name(),
+                temperature=temp,
+                max_tokens=max_tok,
+                timeout=180.0 if _is_colibri_base(base) else 600.0,
+            )
+            # Colibri often 500/OOM while /models is fine - cascade once
+            if not result.get("ok") and _is_colibri_base(base):
+                fb = _pick_heavy_fallback(
+                    reason=f"Colibri chat failed: {result.get('error') or 'empty response'}"
+                )
+                if fb.get("ok"):
+                    fallback_meta = fb
+                    if fb.get("switched_to") == "ollama_heavy":
+                        result = _chat_with_ollama_cascade(
+                            messages=messages,
+                            temperature=temp,
+                            max_tokens=max_tok,
+                            first=fb,
+                        )
+                    else:
+                        result = _chat_completions(
+                            base=_api_base(),
+                            messages=messages,
+                            model=_model_name(),
+                            temperature=temp,
+                            max_tokens=max_tok,
+                        )
+                        result["api"] = _api_base()
+                        result["model_used"] = _model_name()
+                        result["switched_to"] = fb.get("switched_to")
+                    result["colibri_failed"] = True
+            # Already on Ollama (prior escalate / env) - walk smaller models on OOM
+            elif not result.get("ok") and "11434" in (base or ""):
+                fb = _try_ollama_heavy()
+                if fb.get("ok"):
+                    fallback_meta = fb
+                    result = _chat_with_ollama_cascade(
+                        messages=messages,
+                        temperature=temp,
+                        max_tokens=max_tok,
+                        first=fb,
+                    )
+
         result["elapsed_sec"] = round(time.time() - t0, 2)
-        result["api"] = base
+        result["api"] = result.get("api") or _api_base()
+        result["model_used"] = result.get("model_used") or _model_name()
         result["limb"] = "heavy_brain"
         result["at"] = _now()
+        if fallback_meta:
+            result["fallback"] = {
+                k: fallback_meta.get(k)
+                for k in ("switched_to", "model", "note", "fallback_trail", "candidates")
+                if k in fallback_meta
+            }
         if result.get("ok"):
-            result["message"] = "Heavy brain answered — use this for the hard step; daily chat stays on Ollama."
+            via = (
+                result.get("switched_to")
+                or (fallback_meta or {}).get("switched_to")
+                or ("colibri" if _is_colibri_base(str(result.get("api") or "")) else "heavy")
+            )
+            result["message"] = (
+                f"Heavy brain answered via {via} - use this for the hard step; daily chat stays on Ollama."
+            )
         return result
 
     def heavy(
