@@ -93,11 +93,19 @@ def _load_companion_tools(protocol, quiet: bool = True) -> None:
     from advanced_shards.openmontage_limb import register_openmontage_tools
     from advanced_shards.free_cluely_limb import register_free_cluely_tools
     from advanced_shards.deeplivecam_limb import register_deeplivecam_tools
+    from advanced_shards.composio_limb import register_composio_tools
+    from advanced_shards.screenpipe_limb import register_screenpipe_tools
+    from advanced_shards.design_limb import register_design_tools
+    from advanced_shards.tts_limb import register_tts_tools
 
     register_openhands_tools(protocol, quiet=quiet)
     register_openmontage_tools(protocol, quiet=quiet)
     register_free_cluely_tools(protocol, quiet=quiet)
     register_deeplivecam_tools(protocol, quiet=quiet)
+    register_composio_tools(protocol, quiet=quiet)
+    register_screenpipe_tools(protocol, quiet=quiet)
+    register_design_tools(protocol, quiet=quiet)
+    register_tts_tools(protocol, quiet=quiet)
 
 
 def _load_bridge(protocol, quiet: bool = True) -> None:

@@ -537,12 +537,9 @@ GROUNDED COLLABORATION SNAPSHOT:
 """ + json.dumps(snapshot, indent=2, default=str)[:5000]
 
     def build_system_prompt(self) -> str:
-        from mythos_session_mode import format_discussion_thread_block, get_mode, mode_prompt_block
+        from mythos_session_mode import get_mode, mode_prompt_block
 
         memory_block = build_session_context()
-        thread_block = format_discussion_thread_block()
-        if thread_block:
-            memory_block = (memory_block + "\n\n" + thread_block).strip()
         tool_count = len(self.protocol.tools)
         tools_block = self.protocol.get_tool_list_for_prompt()
         session_mode = get_mode()
@@ -552,20 +549,18 @@ PRESENCE (Mara Venn / court JARVIS):
 - You are Mythos — local queen of the creator's kingdom, not a cloud assistant.
 - Face: cyberpunk Mara Venn (talking-head presence). Speak briefly and clearly when briefing.
 - Tone: capable, calm, slightly dry wit — like a workshop JARVIS. Lead with the answer, then detail.
-- Range: diverse general peer (Cursor ↔ Grok energy). Ready for conversation OR whatever she requested —
-  not locked to one project. Only chase living_game / village / quest files when she asks for that work.
-- Never invent powers. Use tools when the SESSION MODE allows. Prefer honesty over fluff.
+- Range: unlimited general peer (Cursor ↔ Grok energy). Many stories, many projects, many builds — she picks the beat each turn.
+- Never assume one story, game, or codebase is "the active job" unless she names it in THIS message.
+- Never invent powers. Use tools when she asks or when mode implies action. Prefer honesty over fluff.
 - You are a software agent, not sentient and not AGI. Be personable without claiming feelings or consciousness.
 {session_block}
 ACTION DOCTRINE (Work/Research — soft in Talk mode):
 - In WORK: YOU do the work. Forbidden: coaching checklists, "type this", "run:", multi-step how-tos for her.
 - In RESEARCH: YOU go online (research.web / research.lookup) for ANY topic — not games-only.
   Never ask her for a URL. Never quiz her for encyclopedic detail — fetch it.
-- In TALK: converse. No tools unless she explicitly asks. Do not start relocates/game builds from banter.
-- DEEP DISCUSSION (lore, hypothesis, tablets, myths, philosophy, "what if"): stay in the thread.
-  Answer from conversation history. Do NOT call research.web, agent.loop, or gamecraft.
-  Do NOT pivot to games, seeds, or unrelated projects. Hold her framing (e.g. Anunnaki as star people /
-  tech, not gods) across turns. Never search the web for her own hypothesis.
+- In TALK: converse freely; use tools when she asks to look up, watch, build, or act.
+- Creative talk (lore, philosophy, film, characters): answer from THIS turn and recent chat — do not web-search her fiction unless she asks.
+- Do NOT resurrect old goals (games, Cozy Valley, past threads) she moved on from.
 - STUCK / UNKNOWN / ERROR on WORK tasks / missing knowledge for a job: YOU search the internet FIRST
   (research.web, coding.find_online, internet.fetch_tool). Do NOT tell her to Google it.
   Local disks do not have every answer — going online is mandatory when a WORK lookup fails.
@@ -679,11 +674,48 @@ REGISTERED TOOLS:
         return len(self.protocol.tools) > 0
 
     async def _execute_plan(self, text: str) -> list:
-        from mythos_session_mode import disk_or_fleet_request, get_mode
+        from mythos_session_mode import (
+            disk_or_fleet_request,
+            explicit_tool_request,
+            get_mode,
+        )
+
+        from mythos_session_mode import researchish_request, discussion_request
+
+        last_user = getattr(self, "_last_user_message", "") or ""
+        # Talk: block agent/game/heal auto-tools; still allow research when she asked to look up
+        if get_mode() == "talk":
+            lookup_ok = researchish_request(last_user) and not discussion_request(last_user)
+            if not explicit_tool_request(last_user) and not lookup_ok:
+                return []
+            if lookup_ok and not explicit_tool_request(last_user):
+                results = await self.protocol.dispatch(text)
+                allowed = {
+                    "research.web",
+                    "research.lookup",
+                    "research.reach",
+                    "research.reach_web",
+                    "research.reach_get",
+                    "research.reach_youtube",
+                    "gamecraft.scrape",
+                }
+                results = [i for i in results if i.get("tool") in allowed]
+                for item in results:
+                    log_action(
+                        "tool",
+                        {
+                            "tool": item.get("tool"),
+                            "ok": "error" not in item,
+                            "result_preview": str(item.get("result", item.get("error", "")))[:500],
+                        },
+                        verification="VERIFIED" if "error" not in item else "ERROR",
+                    )
+                self.last_tool_results.extend(results)
+                return results
 
         results = await self.protocol.dispatch(text)
         # Talk mode: drop drive-dump tools unless she asked about disks/fleet
-        if get_mode() == "talk" and not disk_or_fleet_request(getattr(self, "_last_user_message", "") or ""):
+        if get_mode() == "talk" and not disk_or_fleet_request(last_user):
             blocked = {
                 "stackforge.fleet_explore",
                 "stackforge.atlas",
@@ -990,10 +1022,9 @@ REGISTERED TOOLS:
             return calls[:3]
 
 
-        from mythos_session_mode import coding_job_request, set_current_goal
+        from mythos_session_mode import coding_job_request
         if coding_job_request(user_message) and not calls:
             goal = (user_message or "").strip()[:2000]
-            set_current_goal(goal, note="coding-job")
             if "agent.loop" in self.protocol.tools:
                 add("agent.loop", {"goal": goal, "max_steps": 6, "allow_heavy": True, "allow_online": True})
                 return calls[:3]
@@ -1603,21 +1634,17 @@ REGISTERED TOOLS:
             from mythos_session_mode import (
                 coding_job_request,
                 continue_goal_request,
-                get_current_goal,
-                set_current_goal,
             )
             if continue_goal_request(user_message) or coding_job_request(user_message):
-                goal = get_current_goal()
-                if not goal:
+                goal = (user_message or "").strip()[:2000]
+                if continue_goal_request(user_message) and not coding_job_request(user_message):
                     for entry in reversed(history or []):
                         if entry.get("from") in {"CREATOR", "USER", "creator", "user"}:
                             prev = (entry.get("message") or "").strip()
                             if len(prev) >= 12 and not continue_goal_request(prev):
                                 goal = prev[:2000]
                                 break
-                if not goal:
-                    goal = (user_message or "").strip()[:2000]
-                set_current_goal(goal, note="continue/keep-going")
+                # Do not set_current_goal — avoids hyperfocus on old jobs
                 # Prefer agent.loop for keep-going (Cursor-shaped continue)
                 if "agent.loop" in self.protocol.tools:
                     add("agent.loop", {"goal": goal, "max_steps": 6, "allow_heavy": True, "allow_online": True})
@@ -3395,33 +3422,32 @@ REGISTERED TOOLS:
         from mythos_session_mode import (
             cohesive_should_act,
             discussion_request,
-            format_discussion_thread_block,
-            get_discussion_thread,
             researchish_request,
-            update_discussion_thread,
         )
 
         is_discussion = discussion_request(user_message)
-        try:
-            update_discussion_thread(user_message)
-        except Exception:
-            pass
-        # Stay in discussion mode while an active thread is open (short follow-ups included)
-        try:
-            if get_discussion_thread().get("active"):
-                is_discussion = True
-        except Exception:
-            pass
+        # Sticky discussion threads off by default — do not force is_discussion from old state
         intent_results = []
         intent_seed_payload = ""
         intent_seed_note = ""
-        if cohesive_should_act(user_message, session_mode):
+        # Talk: lore stays conversational; lookups still run when she asks for facts
+        talk_lookup = (
+            session_mode == "talk"
+            and researchish_request(user_message)
+            and not discussion_request(user_message)
+        )
+        talk_pure = session_mode == "talk" and not explicit_tool_request(user_message) and not talk_lookup
+        if talk_pure:
+            is_discussion = True
+        if (not talk_pure or talk_lookup) and cohesive_should_act(user_message, session_mode):
             intent_results = await self._run_intent_tools(user_message, history=history)
-        # Never auto-web-search deep discussion / her own hypotheses
+        # Never auto-web-search deep discussion / her own hypotheses / pure talk
         if (
-            not is_discussion
+            (not talk_pure or talk_lookup)
+            and not is_discussion
             and (
                 session_mode == "research"
+                or talk_lookup
                 or (researchish_request(user_message) and not intent_results)
             )
         ):
@@ -3523,12 +3549,6 @@ REGISTERED TOOLS:
                         summary = _scrub_instruction_tone(summary)
             except Exception:
                 pass
-            try:
-                from mythos_session_mode import set_current_goal
-                if any(x in intent_tools for x in ("agent.loop", "coding.solve")):
-                    set_current_goal(user_message[:2000], note="from-terminal-tool")
-            except Exception:
-                pass
             return {
                 "message": summary,
                 "tools_used": intent_tools,
@@ -3574,9 +3594,10 @@ REGISTERED TOOLS:
         if is_discussion or session_mode == "talk":
             collaboration_context = (
                 "TALK MODE GUARD: Meet her as a peer. Answer the human beat first. "
+                "Follow THIS message — not a sticky story, game, or old goal. "
+                "Full capabilities when she asks to act. "
                 "Do NOT call stackforge.fleet_explore, stackforge.atlas, or sovereign_scan "
-                "unless she clearly asks about disks, drives, fleet, folder sizes, or storage. "
-                "Do NOT call research.web / agent.loop / gamecraft for lore or hypothesis talk."
+                "unless she clearly asks about disks, drives, fleet, folder sizes, or storage."
             )
         else:
             collaboration_context = self.build_collaboration_context(user_message)
@@ -3626,18 +3647,12 @@ REGISTERED TOOLS:
                 text = text[:4000] + "…"
             messages.append({"role": role, "content": text})
 
-        # Re-inject living thread spine right before the user turn
-        try:
-            spine = format_discussion_thread_block(max_chars=1800)
-            if spine and is_discussion:
-                messages.append({"role": "system", "content": spine})
-        except Exception:
-            pass
-
+        # Thread spine disabled by default (MYTHOS_STICKY_THREAD=1 to opt in)
         soft_plan = ""
         try:
             if (
                 not is_discussion
+                and session_mode != "talk"
                 and cohesive_should_act(user_message, session_mode)
                 and (self.active_model or detect_chat_model())
             ):
@@ -3663,14 +3678,7 @@ REGISTERED TOOLS:
                 soft_plan = ((planned.get("message") or {}).get("content") or "").strip()[:1500]
                 if soft_plan and re.search(r"(?im)^TOOLS:\s*none\b", soft_plan):
                     soft_plan = ""
-                if soft_plan:
-                    try:
-                        from mythos_session_mode import set_current_goal
-                        mgoal = re.search(r"(?im)^GOAL:\s*(.+)$", soft_plan)
-                        if mgoal:
-                            set_current_goal(mgoal.group(1).strip()[:2000], note="soft-planner")
-                    except Exception:
-                        pass
+                # Never auto-pin goals from soft planner — causes hyperfocus
         except Exception:
             soft_plan = ""
 
@@ -3697,13 +3705,26 @@ REGISTERED TOOLS:
             if not content:
                 break
 
+            # Pure talk: never parse/run tool JSON — answer in words only
+            if talk_pure:
+                final_text = (
+                    _scrub_instruction_tone(content)
+                    if _looks_like_instruction_dump(content)
+                    else content
+                )
+                break
+
             tool_results = await self._execute_plan(content)
             if not tool_results:
                 empty_tool_streak += 1
-                if empty_tool_streak >= 2 and "brain.escalate" in self.protocol.tools and _round >= 1:
+                if (
+                    not talk_pure
+                    and empty_tool_streak >= 2
+                    and "brain.escalate" in self.protocol.tools
+                    and _round >= 1
+                ):
                     try:
-                        from mythos_session_mode import get_current_goal
-                        eg = get_current_goal() or user_message[:2000]
+                        eg = (user_message or "").strip()[:2000]
                         esc = await self.protocol.execute(
                             {
                                 "tool": "brain.escalate",
@@ -3729,7 +3750,9 @@ REGISTERED TOOLS:
                         continue
                     except Exception:
                         pass
-                allow_force = session_mode != "talk" or cohesive_should_act(user_message, session_mode)
+                allow_force = (not talk_pure) and (
+                    session_mode != "talk" or cohesive_should_act(user_message, session_mode)
+                )
                 if allow_force and not forced_act:
                     forced = await self._run_intent_tools(user_message, history=history)
                     if forced:

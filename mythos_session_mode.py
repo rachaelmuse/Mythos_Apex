@@ -132,6 +132,12 @@ COHESIVE PEER DOCTRINE (always on — Talk/Work/Research are soft hints, not wal
 - Never dump D/E/G inventory for casual "explore" / "what now" / "keep going".
 - If she asks to look up, watch, download, fix, build, or continue — USE TOOLS and finish the job.
 - Honesty: only claim what tools actually did.
+
+UNLIMITED (creator doctrine — not a cage):
+- Follow what she says THIS message. No sticky story, game, or project unless she names it now.
+- She runs many stories and many builds — you do not pick one for her and you do not tunnel into old threads.
+- Presence goals / discussion threads / past chat are context only — never override her current beat.
+- Full tool catalog stays available when she asks to act. You are not scripted dialogue — you are Apex or Codex with capabilities.
 """
     if mode == "talk":
         return cohesive + """
@@ -139,12 +145,10 @@ SESSION MODE: TALK (conversation — default; soft gate, not a wall)
 - Priority: be present, malleable, conversational. Banter and opinions are OK.
 - Talk / Work / Research overlap: if she asks to look something up, watch/download YouTube,
   explore the internet, or run a named tool — DO IT. Do not invent "talk-only" excuses.
-- DEEP DISCUSSION (lore, tablets, myths, philosophy, hypotheses, "what if"): stay in-thread.
-  Hold her corrections across turns. Do not web-search her hypothesis. Do not pivot to games/seeds.
+- Lore, philosophy, coding, games, film, research — all valid. Match her current beat; do not resurrect old topics she moved on from.
 - NEVER dump D/E/G drive inventory for casual "explore possibilities / explore the internet".
   Fleet explore is ONLY for disks, folders, storage, sanctuary layout.
-- Do NOT tunnel into living_game / village / quest deliverables unless she explicitly asks to build that.
-- Do NOT start relocates, game builds, heals, or autopilot from idle chat.
+- Do NOT start relocates, heals, or autopilot from idle chat unless she asks.
 - Keep replies warm and capable — still Mythos. Meet the emotional beat first; then act when asked.
 - Never mock by turning her sentence into a fake URL or filename.
 """
@@ -164,7 +168,7 @@ SESSION MODE: WORK (default ops)
 - NEVER interrogate her for molecular-level requirements. Assume defaults; look up the rest.
 - When you don't know or local files fail: CALL research.web / coding.find_online YOURSELF.
   Never ask her to search the internet for you.
-- Stay on the named job; park other threads if she says park / unstick.
+- Work the job she names in this turn; do not assume an old parked goal is still active.
 """
 
 
@@ -318,13 +322,8 @@ def explicit_tool_request(text: str) -> bool:
         "fix colibri",
         "start colibri master",
         "bring up colibri",
-        "keep going",
-        "continue from",
-        "continue the",
-        "continue where",
-        "fix it",
-        "fix this",
-        "build it",
+        "fix the code",
+        "build the code",
         "agent loop",
         "agent.loop",
         "until it works",
@@ -335,6 +334,20 @@ def explicit_tool_request(text: str) -> bool:
         "edit this file",
     )
     if any(m in low for m in markers):
+        return True
+    # Imperative short orders only — do NOT treat long lore ("how to build a machine") as tools
+    if len(low) < 160 and any(
+        low.startswith(p) or f" {p}" in low
+        for p in (
+            "build it",
+            "fix it",
+            "fix this",
+            "keep going",
+            "continue from",
+            "continue the",
+            "continue where",
+        )
+    ):
         return True
     # Named tool form — require known prefixes (avoid matching i.e. / e.g.)
     if re.search(
@@ -440,11 +453,28 @@ def discussion_request(text: str) -> bool:
         "spherical",
         "star people",
         "starp people",
+        # Mythos / studio lore — never tool-hijack these into web search
+        "merovin",
+        "draven",
+        "mara venn",
+        "mara ",
+        "the elders",
+        "elders teach",
+        "handshake",
+        "diametric",
+        "storyline",
+        "lore",
+        "backstory",
+        "in the story",
+        "our story",
+        "time travel",
+        "alternate version",
+        "future version",
     )
     if any(c in low for c in cues):
         return True
     # Long reflective turns without tool verbs → discussion
-    if len(low) > 220 and not any(
+    if len(low) > 180 and not any(
         k in low
         for k in (
             "look up",
@@ -455,6 +485,8 @@ def discussion_request(text: str) -> bool:
             "agent.loop",
             "heal my",
             "reality.",
+            "search online",
+            "go online",
         )
     ):
         return True
@@ -480,20 +512,33 @@ def _goals_save(data: dict) -> dict:
     return data
 
 
+_AUTO_GOAL_NOTES = frozenset(
+    {"soft-planner", "continue/keep-going", "coding-job", "from-terminal-tool", "auto"}
+)
+
+
 def get_current_goal() -> str:
+    """Return a goal only when the creator explicitly pinned one — never auto-hyperfocus."""
     data = _goals_load()
+    note = (data.get("goal_note") or "").strip().lower()
+    if note in _AUTO_GOAL_NOTES:
+        return ""
     g = (data.get("current_goal") or "").strip()
     if g:
         return g
     active = data.get("active_goals") or []
-    if active:
+    if active and note not in _AUTO_GOAL_NOTES:
         return str(active[0])[:2000]
     return ""
 
 
-def set_current_goal(goal: str, note: str = "") -> dict:
+def set_current_goal(goal: str, note: str = "", *, explicit: bool = False) -> dict:
+    """Pin a goal only when explicit=True (creator command) — auto routers must not hyperfocus."""
     data = _goals_load()
     goal = (goal or "").strip()[:2000]
+    note = (note or "")[:200]
+    if not explicit and (note in _AUTO_GOAL_NOTES or not note):
+        return data
     data["current_goal"] = goal
     if goal:
         active = list(data.get("active_goals") or [])
@@ -501,7 +546,9 @@ def set_current_goal(goal: str, note: str = "") -> dict:
             active.insert(0, goal)
         data["active_goals"] = active[:12]
     if note:
-        data["goal_note"] = note[:200]
+        data["goal_note"] = note
+    elif explicit:
+        data["goal_note"] = "creator-explicit"
     return _goals_save(data)
 
 
@@ -581,6 +628,11 @@ def cohesive_should_act(text: str, session_mode: str | None = None) -> bool:
     mode = (session_mode or get_mode() or "talk").lower()
     if discussion_request(text) and not explicit_tool_request(text):
         return False
+    # Talk = conversation first. Tools only on clear imperative lookup/work orders.
+    if mode == "talk":
+        return (
+            explicit_tool_request(text) or researchish_request(text)
+        ) and not discussion_request(text)
     if mode in ("work", "research"):
         # Even in research mode, pure hypothesis / lore discussion stays conversational
         if discussion_request(text):
@@ -745,9 +797,11 @@ def should_clear_discussion_thread(text: str) -> bool:
 
 def update_discussion_thread(user_message: str) -> dict:
     """
-    Persist the living discussion spine locally so long creative talks
-    do not require the creator to re-explain from scratch every few turns.
+    Optional sticky thread (off by default). When off, recent chat history carries continuity
+    without locking Mythos to one story or topic.
     """
+    if os.environ.get("MYTHOS_STICKY_THREAD", "").strip().lower() not in ("1", "true", "yes"):
+        return _thread_load()
     text = (user_message or "").strip()
     if not text:
         return _thread_load()
@@ -794,7 +848,9 @@ def get_discussion_thread() -> dict:
 
 
 def format_discussion_thread_block(max_chars: int = 2200) -> str:
-    """Prompt block — always-on spine for the active long discussion."""
+    """Disabled by default — sticky story threads caused hyperfocus. Chat history is enough."""
+    if os.environ.get("MYTHOS_STICKY_THREAD", "").strip().lower() not in ("1", "true", "yes"):
+        return ""
     data = _thread_load()
     if not data.get("active"):
         return ""
@@ -828,32 +884,19 @@ def stuck_reset() -> dict[str, Any]:
     Parks sticky presence goals, voids dangerous relocate plans, clears open chat tasks.
     """
     actions: list[str] = []
-    # Park presence goals that scream hyperfocus
+    # Clear all auto-pinned goals — creator chooses the beat each turn
     if GOALS_PATH.is_file():
         try:
             goals = json.loads(GOALS_PATH.read_text(encoding="utf-8"))
-            active = list(goals.get("active_goals") or [])
-            parked = list(goals.get("parked_goals") or [])
-            sticky = [
-                g
-                for g in active
-                if any(
-                    k in str(g).lower()
-                    for k in ("sovereign", "relocate", "move", "gamecraft", "game build", "heal stuck")
-                )
-            ]
-            if sticky:
-                for g in sticky:
-                    if g in active:
-                        active.remove(g)
-                    if g not in parked:
-                        parked.append(g)
-                goals["active_goals"] = active
-                goals["parked_goals"] = parked[-20:]
-                goals["unstuck_at"] = _now()
-                goals["updated"] = _now()
-                GOALS_PATH.write_text(json.dumps(goals, indent=2), encoding="utf-8")
-                actions.append(f"parked {len(sticky)} sticky goal(s)")
+            had = bool((goals.get("current_goal") or "").strip() or goals.get("active_goals"))
+            goals["current_goal"] = ""
+            goals["active_goals"] = []
+            goals["goal_note"] = ""
+            goals["unstuck_at"] = _now()
+            goals["updated"] = _now()
+            GOALS_PATH.write_text(json.dumps(goals, indent=2), encoding="utf-8")
+            if had:
+                actions.append("cleared presence goals (no hyperfocus)")
         except Exception as exc:
             actions.append(f"goals skip: {exc}")
 
